@@ -1,0 +1,17 @@
+# Runtime state
+runtime/
+quota_cache.json
+cli_router_quota.json
+model-cooldowns.json
+
+# Python
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Local
+.env
+openspec/
+.claude/
+.codex/
+graphify-out/

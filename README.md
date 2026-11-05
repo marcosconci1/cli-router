@@ -1,0 +1,80 @@
+# cli-router
+
+> A task router for Hermes Agent. Submit a coding task, and the AI CLI with real quota room builds it, commits it on your branch, and passes two independent reviews before it is done.
+
+Developers who use AI coding CLIs manage several subscriptions at once. Each CLI has its own usage limit, and the limits reset on different schedules. Someone has to track them. When the CLI in use hits its limit in the middle of a task, the person switches tools by hand, restarts the task, and explains the context again. While one subscription is exhausted, the others sit idle.
+
+cli-router is a plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that takes over this work. You submit one task. The router reads live usage windows from every configured CLI, keeps a reserve, and picks the one with room. The chosen CLI runs with sandbox write controls and commits the result on your branch. The bubblewrap sandbox leaves host files readable except for masked paths, and network access remains open; see [the sandbox contract](docs/sandbox.md). Before the change counts as done, two distinct models in fresh contexts and separate disposable snapshots review it independently. Models may share a provider. A review that fails sends the task back with the required changes.
+
+Work spreads across the installed accounts so no single account absorbs everything, within each provider's terms of service; tasks keep moving when a quota window closes, and every change lands with a second opinion recorded in the task history.
+
+```mermaid
+flowchart LR
+    T["Your task"] --> R{"cli-router"}
+    R -->|"picks a route<br>by live quota"| W["Worker CLI<br>(sandboxed)"]
+    W --> G["Commit on your branch"]
+    G --> V{"2 independent<br>model reviews"}
+    V -->|"both PASS"| D["Done"]
+    V -->|"FAIL"| R
+```
+
+## How it picks a route
+
+* Reads real usage windows from each provider, keeps a 20% reserve when usage is known, and never picks a route that is about to hit its limit.
+* Ranks candidates by a public coding benchmark index. No extra service needed.
+* Ranking works without Jev. The Jev decision plugin can rank with a live LLM call and is required for retry handoff: if a failed attempt needs another worker, missing or unavailable Jev blocks the task.
+* Before a change counts as done, two distinct models in fresh contexts and separate disposable snapshots must review it. A failure sends the task back with the reviewers' required changes.
+
+## Quick start
+
+```bash
+hermes plugins install marcosconci1/cli-router
+```
+
+Enable it in your profile `config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - cli-router
+
+platform_toolsets:
+  discord:
+    - cli_router
+```
+
+Restart the gateway, then ask Hermes to route a task:
+
+```json
+{"action": "submit", "mode": "change", "repository": "/path/to/repo",
+ "task": "Fix the failing test in tests/api.py",
+ "acceptance_criteria": [{"type": "python_compiles", "path": "app.py"}]}
+```
+
+Poll with `{"action": "wait", "task_id": "<id>"}` until it reports completed.
+
+You can pin the worker to one CLI or model by adding `"cli": "claude"` or
+`"model": "claude-opus-5-5"` to the submit call. The pin narrows the routing
+to that route and skips automatic ranking; the independent reviews still pick
+their own models. A pin that matches nothing is refused at submit with the
+list of installed options.
+
+## Requirements
+
+* Linux with bubblewrap (`bwrap`), Git, and `systemd-run`.
+* At least one authenticated provider CLI (`codex`, `kimi`, `agy`, `claude`, or `opencode`).
+* An ai-memory CLI and server, for cross attempt memory and the review gate.
+
+## Documentation
+
+* [Installation](docs/install.md)
+* [Quota behavior](docs/quota.md)
+* [The sandbox](docs/sandbox.md)
+* [Wiki: how it is built](wiki/Home.md)
+* Run `python3 doctor.py` to check your machine.
+
+This tool is not affiliated with Anthropic, OpenAI, Moonshot AI or Google. It reads the locally stored credentials of the provider CLIs installed on your machine to report quota. You are responsible for complying with each provider's terms of service.
+
+## License
+
+MIT. The vendored quota fetchers under `quota_providers/` are adapted from [rarf/hermes-quota-plugin](https://github.com/rarf/hermes-quota-plugin) (MIT). The benchmark index in `benchmarks/` is public data from [Akita's LLM benchmark post](https://akitaonrails.com/2026/10/28/llm-benchmark-v4-gemini-4-argon-gpt-sol-6-1-terra-kimi-k3-1-pro-claude-sonnet-5-5/).

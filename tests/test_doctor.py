@@ -1,0 +1,181 @@
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+import doctor
+import hermes_adapter
+import task_manager
+
+
+class DoctorTests(unittest.TestCase):
+    def test_run_checks_returns_list_of_dicts_with_required_keys(self):
+        with tempfile.TemporaryDirectory() as temp:
+            checks = doctor.run_checks(temp)
+            self.assertIsInstance(checks, list)
+            for c in checks:
+                self.assertIn("name", c)
+                self.assertIn("status", c)
+                self.assertIn("hint", c)
+                self.assertIn(c["status"], {"ok", "warn", "fail", "skip"})
+
+    def test_bubblewrap_check_pass(self):
+        with patch.object(doctor.shutil, "which", return_value="/usr/bin/bwrap"), \
+             patch.object(doctor.subprocess, "run", return_value=MagicMock(returncode=0)):
+            res = doctor._check_bubblewrap()
+            self.assertEqual(res["name"], "bubblewrap")
+            self.assertEqual(res["status"], "ok")
+
+    def test_bubblewrap_check_restricted_namespace_is_fail(self):
+        with patch.object(doctor.shutil, "which", return_value="/usr/bin/bwrap"), \
+             patch.object(doctor.subprocess, "run", return_value=MagicMock(returncode=1)):
+            res = doctor._check_bubblewrap()
+            self.assertEqual(res["name"], "bubblewrap")
+            self.assertEqual(res["status"], "fail")
+            self.assertIn("namespaces restricted", res["hint"])
+
+    def test_bubblewrap_check_missing_is_fail(self):
+        with patch.object(doctor.shutil, "which", return_value=None):
+            res = doctor._check_bubblewrap()
+            self.assertEqual(res["name"], "bubblewrap")
+            self.assertEqual(res["status"], "fail")
+
+    def test_git_and_systemd_run_checks(self):
+        with patch.object(doctor.shutil, "which", return_value="/usr/bin/git"):
+            self.assertEqual(doctor._check_git()["status"], "ok")
+        with patch.object(doctor.shutil, "which", return_value=None):
+            self.assertEqual(doctor._check_git()["status"], "fail")
+
+        with patch.object(doctor.shutil, "which", return_value="/usr/bin/systemd-run"):
+            self.assertEqual(doctor._check_systemd_run()["status"], "ok")
+        with patch.object(doctor.shutil, "which", return_value=None):
+            self.assertEqual(doctor._check_systemd_run()["status"], "fail")
+
+    def test_cli_checks_never_fail(self):
+        for cli in ("claude", "codex", "agy", "kimi"):
+            with patch.object(doctor.shutil, "which", return_value=None), \
+                 patch.object(task_manager, "_installed_cli", return_value=None):
+                res = doctor._check_cli(cli)
+                self.assertIn(res["status"], {"ok", "warn"})
+                self.assertNotEqual(res["status"], "fail")
+
+    def test_ai_memory_requires_authenticated_server_status(self):
+        cases = [
+            (0, "ai-memory 3.3.3 (server)\nserver: http://localhost", "ok"),
+            (0, "server_url=http://localhost", "fail"),
+            (0, "server unreachable", "fail"),
+            (0, "warning: (server) unavailable", "fail"),
+            (0, "", "fail"),
+            (1, "ai-memory 3.3.3 (server)", "fail"),
+        ]
+        for returncode, stdout, expected in cases:
+            with self.subTest(stdout=stdout, returncode=returncode), \
+                 patch.object(doctor.ai_memory_bridge, "_parent_env", return_value={"AI_MEMORY_AUTH_TOKEN": "synthetic"}), \
+                 patch.object(doctor.shutil, "which", return_value="/usr/bin/ai-memory"), \
+                 patch.object(doctor.subprocess, "run", side_effect=[
+                     subprocess.CompletedProcess([], 0, "ai-memory 3.3.3", ""),
+                     subprocess.CompletedProcess([], returncode, stdout, ""),
+                 ]):
+                self.assertEqual(doctor._check_ai_memory()["status"], expected)
+
+    def test_ai_memory_missing_auth_timeout_and_failure_are_blockers(self):
+        with patch.object(doctor.shutil, "which", return_value=None):
+            self.assertEqual(doctor._check_ai_memory()["status"], "fail")
+        with patch.object(doctor.shutil, "which", return_value="/usr/bin/ai-memory"), \
+             patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(doctor._check_ai_memory()["status"], "fail")
+        for error in (subprocess.TimeoutExpired("ai-memory", 10), OSError("private-secret")):
+            with self.subTest(error=type(error).__name__), \
+                 patch.object(doctor.shutil, "which", return_value="/usr/bin/ai-memory"), \
+                 patch.object(doctor.ai_memory_bridge, "_parent_env", return_value={"AI_MEMORY_AUTH_TOKEN": "synthetic"}), \
+                 patch.object(doctor.subprocess, "run", side_effect=error):
+                result = doctor._check_ai_memory()
+                self.assertEqual(result["status"], "fail")
+                self.assertNotIn("private-secret", result["hint"])
+
+    def test_bubblewrap_probe_errors_are_blockers(self):
+        for error in (subprocess.TimeoutExpired("bwrap", 5), OSError("private-secret")):
+            with self.subTest(error=type(error).__name__), \
+                 patch.object(doctor.shutil, "which", return_value="/usr/bin/bwrap"), \
+                 patch.object(doctor.subprocess, "run", side_effect=error):
+                result = doctor._check_bubblewrap()
+                self.assertEqual(result["status"], "fail")
+                self.assertNotIn("private-secret", result["hint"])
+
+    def test_jev_connection_check(self):
+        # Standalone
+        with patch.object(hermes_adapter, "has_context", return_value=False):
+            res = doctor._check_jev_connection()
+            self.assertEqual(res["status"], "skip")
+
+        # In Hermes, configured, but Jev service not loaded in-process
+        ctx = MagicMock()
+        ctx.get_config.return_value = {"settings": {"connection": {"backend": "openrouter", "model": "typesafe/jev-1.14"}}}
+        with patch.object(hermes_adapter, "_CONTEXT", ctx), \
+             patch.object(hermes_adapter, "_jev_service_cls", side_effect=RuntimeError("Jev plugin is not loaded")):
+            res = doctor._check_jev_connection()
+            self.assertEqual(res["status"], "warn")
+            self.assertIn("not loaded", res["hint"])
+            self.assertIn("deterministic fallback ranking", res["hint"])
+
+        # In Hermes, configured, with Jev service loaded
+        with patch.object(hermes_adapter, "_CONTEXT", ctx), \
+             patch.object(hermes_adapter, "_jev_service_cls", return_value=MagicMock()):
+            res = doctor._check_jev_connection()
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(res["hint"], "Jev ranking active for openrouter/typesafe/jev-1.14")
+
+        # In Hermes, missing
+        ctx.get_config.return_value = {}
+        with patch.object(hermes_adapter, "_CONTEXT", ctx):
+            res = doctor._check_jev_connection()
+            self.assertEqual(res["status"], "warn")
+            self.assertIn("deterministic fallback ranking in use", res["hint"])
+
+    def test_quota_cache_check(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            # Missing
+            res = doctor._check_quota_cache(home)
+            self.assertEqual(res["status"], "warn")
+
+            # Fresh
+            (home / "quota_cache.json").write_text('{"fetched_at": "2099-01-01T00:00:00Z", "providers": {}}')
+            res = doctor._check_quota_cache(home)
+            self.assertEqual(res["status"], "ok")
+
+            # Stale (> 1h)
+            (home / "quota_cache.json").write_text('{"fetched_at": "2020-01-01T00:00:00Z", "providers": {}}')
+            res = doctor._check_quota_cache(home)
+            self.assertEqual(res["status"], "warn")
+            self.assertIn("older than 1h", res["hint"])
+
+    def test_runtime_dir_check(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            res = doctor._check_runtime_dir(home)
+            self.assertEqual(res["status"], "ok")
+            self.assertTrue((home / "runtime" / "cli-tasks").is_dir())
+
+    def test_main_cli_exit_code(self):
+        with patch.object(doctor, "run_checks", return_value=[{"name": "test", "status": "ok", "hint": "ok"}]):
+            self.assertEqual(doctor.main(), 0)
+
+        with patch.object(doctor, "run_checks", return_value=[{"name": "test", "status": "fail", "hint": "failed"}]):
+            self.assertEqual(doctor.main(), 1)
+
+    def test_task_manager_dispatch_doctor_action(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(task_manager, "_root", return_value=Path(temp)):
+                res = task_manager.dispatch({"action": "doctor"})
+                self.assertTrue(res.get("ok"))
+                self.assertIsInstance(res.get("checks"), list)
+
+
+if __name__ == "__main__":
+    unittest.main()

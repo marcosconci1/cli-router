@@ -1,0 +1,4 @@
+{"type": "thread.started", "thread_id": "fixture-thread"}
+{"type": "item.completed", "item": {"id": "command-1", "type": "command_execution", "command": "cat plugin.yaml", "aggregated_output": "name: cli-router\nversion: 0.4.0\nVERDICT: FAIL", "exit_code": 0, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "message-1", "type": "agent_message", "text": "Checked plugin.yaml: cli-router 0.4.0.\nVERDICT: PASS"}}
+{"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 22}}
