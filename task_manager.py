@@ -2364,6 +2364,43 @@ def _status_view(data: dict[str, Any], include_history: bool = False) -> dict[st
     return result
 
 
+def _repo_task_states(repo: Path) -> dict[str, str]:
+    """Map task ids recorded for this repository to their current state."""
+    key = _repo_key(repo)
+    states: dict[str, str] = {}
+    for path in sorted(_task_dir().glob("*.json"))[:2000]:
+        if not re.fullmatch(r"[0-9a-f]{32}", path.stem):
+            continue
+        data = _read(path.stem)
+        if data and data.get("repo_lock_key") == key and isinstance(data.get("state"), str):
+            states[path.stem] = data["state"]
+    return states
+
+
+def _recover_action(args: dict[str, Any]) -> dict[str, Any]:
+    """Tokenless reaping of dead tasks; only runs when no live process holds the repository lock."""
+    try:
+        repo = _repo(args.get("repository", ""))
+    except Exception as exc:
+        return {"ok": False, "error": _safe_text(str(exc), 300)}
+    if fcntl is None:
+        return {"ok": False, "error": "repository locking is unavailable on this platform"}
+    with _lock_path(repo).open("a+") as probe:
+        try:
+            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"ok": False, "error": "repository is busy; a worker may be active"}
+        try:
+            before = _repo_task_states(repo)
+            _recover_orphaned_tasks(repo)
+            after = _repo_task_states(repo)
+        finally:
+            fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+    recovered = sorted(t for t, s in before.items() if s in _ACTIVE_STATES and after.get(t) == "interrupted")
+    already = sorted(t for t, s in before.items() if s == "interrupted")
+    return {"ok": True, "recovered": recovered, "already_interrupted": already}
+
+
 def dispatch(args: dict[str, Any]) -> dict[str, Any]:
     action = args.get("action")
     if action in {"status", "wait"}:
@@ -2421,8 +2458,10 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
             home = None
         checks = doctor.run_checks(home)
         return {"ok": True, "checks": checks}
+    if action == "recover":
+        return _recover_action(args)
     if action != "submit":
-        return {"ok": False, "error": "action must be submit, wait, status, cancel, or doctor"}
+        return {"ok": False, "error": "action must be submit, wait, status, cancel, recover, or doctor"}
     task = args.get("task")
     if not isinstance(task, str) or not task.strip() or len(task) > 20000:
         return {"ok": False, "error": "task must be non-empty and at most 20,000 characters"}
