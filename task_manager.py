@@ -2051,7 +2051,8 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
         lock_handle = _lock_path(repo).open("a+")
         if fcntl is not None:
             try:
-                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_mode = fcntl.LOCK_SH if mode == "analysis" else fcntl.LOCK_EX
+                fcntl.flock(lock_handle.fileno(), lock_mode | fcntl.LOCK_NB)
                 locked = True
             except BlockingIOError:
                 _transition(data, "blocked", "repository_lock_blocked", "another worker owns this repository",
@@ -2515,7 +2516,8 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         repo_lock = lock_path.open("a+")
         if fcntl is not None:
             try:
-                fcntl.flock(repo_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_mode = fcntl.LOCK_SH if mode == "analysis" else fcntl.LOCK_EX
+                fcntl.flock(repo_lock.fileno(), lock_mode | fcntl.LOCK_NB)
             except BlockingIOError:
                 repo_lock.close()
                 return {"ok": False, "error": _busy_message(repo)}
@@ -2534,7 +2536,8 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
     # Route selection runs in the request's profile/credential scope; the worker thread runs in a
     # copy of that context so its only auth work (the Jev handoff) stays in the same scope.
     try:
-        _recover_orphaned_tasks(repo)
+        if mode == "change":
+            _recover_orphaned_tasks(repo)
         _transition(data, "memory_check", "task_submitted", "checking the ai-memory prerequisite")
         # Confirm the portable handoff service before quota refresh or Jev
         # evaluation; an outage must not trigger paid routing work.
