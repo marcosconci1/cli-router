@@ -860,9 +860,13 @@ class PolicyTests(unittest.TestCase):
                         "ai_memory": {"workstream_id": str(uuid.UUID(task)),
                                       "workstream_name": tm.ai_memory_bridge.workstream_name(task),
                                       "latest_sequence": counts[task]}}
-            def previous_context(_cwd, stream):
+            def previous_context(_cwd, stream, *, required_marker=None):
                 task = next(task for task in counts if str(uuid.UUID(task)) == stream)
-                return (f"Code task {task} attempt {counts[task]}", counts[task])
+                packet = f"Code task {task} attempt {counts[task]}"
+                if required_marker is not None and required_marker not in packet:
+                    raise tm.ai_memory_bridge.AiMemoryError(
+                        "prior attempt is absent from canonical memory; failover stopped")
+                return (packet, counts[task])
             with patch.object(tm, "_run_candidate", side_effect=synced_result) as run, \
                  patch.object(tm.ai_memory_bridge, "verify_runtime"), \
                  patch.object(tm.ai_memory_bridge, "read_context", side_effect=previous_context), \
@@ -919,8 +923,13 @@ class PolicyTests(unittest.TestCase):
             checks = {"checks": {"diff": {"ok": False}}, "changed_files": ["partial.py"],
                       "head_unchanged": True}
             try:
+                def missing_marker(_cwd, _stream, *, required_marker=None):
+                    if required_marker is not None:
+                        raise tm.ai_memory_bridge.AiMemoryError(
+                            "prior attempt is absent from canonical memory; failover stopped")
+                    return ("ledger without attempt marker", 1)
                 with patch.object(tm.ai_memory_bridge, "verify_runtime"), \
-                     patch.object(tm.ai_memory_bridge, "read_context", return_value=("ledger without attempt marker", 1)), \
+                     patch.object(tm.ai_memory_bridge, "read_context", side_effect=missing_marker), \
                      patch.object(tm, "_run_candidate", return_value={"outcome": "needs_verification",
                          "summary": "partial", "ai_memory": ref}) as run, \
                      patch.object(tm, "_external_verification", return_value={"passed": True, "summary": "passed"}), \

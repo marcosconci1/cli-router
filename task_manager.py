@@ -2129,11 +2129,12 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                     raise RuntimeError("ai-memory bridge module is unavailable")
                 ai_memory_bridge.verify_runtime(repo)
                 if prior_stream:
-                    memory_context, _ = ai_memory_bridge.read_context(repo, prior_stream)
                     expected = (data.get("ai_memory") or {}).get("last_attempt_marker")
-                    if not expected or expected not in memory_context:
+                    if not expected:
                         raise ai_memory_bridge.AiMemoryError(
                             "prior attempt is absent from canonical memory; failover stopped")
+                    memory_context, _ = ai_memory_bridge.read_context(
+                        repo, prior_stream, required_marker=expected)
                     coordinator_checkpoint = json.dumps({
                         "task_id": task_id,
                         "prior_attempts": attempts[-5:],
