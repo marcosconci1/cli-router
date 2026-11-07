@@ -137,6 +137,63 @@ class DoctorTests(unittest.TestCase):
             self.assertEqual(res["status"], "warn")
             self.assertIn("deterministic fallback ranking in use", res["hint"])
 
+    def test_plugin_wiring_check(self):
+        fixtures = {
+            "both present": (
+                """plugins:
+  enabled:
+    - cli-router # installed plugin
+  disabled: []
+platform_toolsets:
+  discord:
+    - cli_router
+""",
+                "ok",
+            ),
+            "plugin missing": (
+                """plugins:
+  enabled:
+    - another-plugin
+platform_toolsets:
+  discord:
+    - cli_router
+""",
+                "fail",
+            ),
+            "toolset missing": (
+                """plugins:
+  enabled:
+    - cli-router
+platform_toolsets:
+  discord:
+    - other_toolset
+""",
+                "fail",
+            ),
+            "inline toolset list": (
+                """plugins:
+  enabled:
+    - cli-router
+platform_toolsets:
+  cli: [hermes-cli, library, cli_router] # active tools
+""",
+                "ok",
+            ),
+        }
+        for label, (config, expected) in fixtures.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp:
+                Path(temp, "config.yaml").write_text(config, encoding="utf-8")
+                result = doctor._check_plugin_wiring(temp)
+                self.assertEqual(result["status"], expected)
+                if label == "toolset missing":
+                    self.assertIn("TOOLSET name is cli_router (underscore)", result["hint"])
+                    self.assertIn("missing toolset entry is silent", result["hint"])
+
+        with tempfile.TemporaryDirectory() as temp:
+            result = doctor._check_plugin_wiring(temp)
+            self.assertEqual(result["status"], "fail")
+            self.assertIn("active profile's config.yaml could not be located", result["hint"])
+
     def test_quota_cache_check(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)

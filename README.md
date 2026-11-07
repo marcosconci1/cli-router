@@ -33,6 +33,8 @@ hermes plugins install marcosconci1/cli-router
 
 Enable it in your profile `config.yaml`:
 
+For retry handoff, also add the `entries` settings block (`routing.providers` and `connection`) shown in [the install guide](docs/install.md#enable-it).
+
 ```yaml
 plugins:
   enabled:

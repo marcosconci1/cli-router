@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -156,6 +157,83 @@ def _check_jev_connection() -> dict[str, str]:
     }
 
 
+def _check_plugin_wiring(home: str | os.PathLike[str] | None = None) -> dict[str, str]:
+    name = "plugin-wiring"
+    resolved_home = _resolve_home(home)
+    if resolved_home is None:
+        return {
+            "name": name,
+            "status": "fail",
+            "hint": "active profile's config.yaml could not be located; run doctor through Hermes or set HERMES_HOME",
+        }
+
+    config_path = resolved_home / "config.yaml"
+    if not config_path.is_file():
+        return {
+            "name": name,
+            "status": "fail",
+            "hint": "active profile's config.yaml could not be located; run doctor through Hermes or set HERMES_HOME",
+        }
+
+    try:
+        lines = config_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return {
+            "name": name,
+            "status": "fail",
+            "hint": "active profile's config.yaml could not be located; run doctor through Hermes or set HERMES_HOME",
+        }
+
+    def without_comment(line: str) -> str:
+        return line.split("#", 1)[0].rstrip()
+
+    plugin_enabled = False
+    in_plugins = False
+    in_enabled = False
+    in_toolsets = False
+    toolset_found = False
+    for raw_line in lines:
+        line = without_comment(raw_line)
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        content = line.strip()
+
+        if indent == 0:
+            in_plugins = content == "plugins:"
+            in_enabled = False
+            in_toolsets = content == "platform_toolsets:"
+            continue
+
+        if in_plugins:
+            if indent == 2 and content == "enabled:":
+                in_enabled = True
+                continue
+            if indent == 2:
+                in_enabled = False
+            if in_enabled and indent >= 4 and content.startswith("-"):
+                entry = content[1:].strip()
+                if entry == "cli-router":
+                    plugin_enabled = True
+
+        if in_toolsets and re.search(r"(?<![A-Za-z0-9_-])cli_router(?![A-Za-z0-9_-])", content):
+            toolset_found = True
+
+    if not plugin_enabled:
+        return {
+            "name": name,
+            "status": "fail",
+            "hint": "cli-router is not in plugins.enabled; add it to the active profile's config.yaml",
+        }
+    if not toolset_found:
+        return {
+            "name": name,
+            "status": "fail",
+            "hint": "plugin name is cli-router but the TOOLSET name is cli_router (underscore); add cli_router under each platform you use in platform_toolsets - a missing toolset entry is silent: the plugin loads but its tools never reach the model",
+        }
+    return {"name": name, "status": "ok", "hint": "plugin enabled and cli_router toolset configured"}
+
+
 def _check_quota_cache(home: Path | None) -> dict[str, str]:
     name = "quota-cache"
     if home is None:
@@ -250,6 +328,7 @@ def run_checks(home: str | os.PathLike[str] | None = None) -> list[dict[str, str
         checks.append(_check_cli(cli_name))
     checks.append(_check_ai_memory())
     checks.append(_check_jev_connection())
+    checks.append(_check_plugin_wiring(resolved_home))
     checks.append(_check_quota_cache(resolved_home))
     checks.append(_check_runtime_dir(resolved_home))
     return checks

@@ -43,6 +43,12 @@ platform_toolsets:
 
 Then restart the gateway and open a fresh session. A running session never picks up plugin changes.
 
+When `connection.backend` is `openrouter`, set `OPENROUTER_API_KEY` in this profile's `.env`. Jev reads that key to select routes; without it, the router falls back to deterministic ranking.
+
+## Multiple profiles (several bots)
+
+Each profile or bot needs its own plugin install (or a symlink to one local clone), its own `plugins.enabled` entry, its own `platform_toolsets` entries, and its own `plugins.entries` settings. Restart the gateway once after updating the profiles; one restart covers them all. The plugin name is `cli-router`, while the toolset name is `cli_router` (underscore).
+
 ## First run
 
 Here `<plugin-dir>` is the directory Hermes reports after install, typically `~/.hermes/profiles/<profile>/plugins/cli-router`.
