@@ -71,7 +71,7 @@ list of installed options.
 * [Quota behavior](docs/quota.md)
 * [The sandbox](docs/sandbox.md)
 * [Wiki: how it is built](wiki/Home.md)
-* Run `python3 doctor.py` to check your machine.
+* Run `python3 doctor.py` to check your machine; the `diagnose` action writes a local, redacted diagnostic bundle (no telemetry, no network) for bug reports.
 
 This tool is not affiliated with Anthropic, OpenAI, Moonshot AI or Google. It reads the locally stored credentials of the provider CLIs installed on your machine to report quota. You are responsible for complying with each provider's terms of service.
 

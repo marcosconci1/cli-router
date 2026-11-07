@@ -15,6 +15,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -68,8 +69,9 @@ except ImportError:
     except ImportError:  # pragma: no cover - fail closed at dispatch
         ai_memory_bridge = None
 try:
-    from . import doctor, hermes_adapter, quota, route_benchmark, worker_resources
+    from . import diagnostic_journal, doctor, hermes_adapter, quota, route_benchmark, worker_resources
 except ImportError:
+    import diagnostic_journal
     import doctor
     import hermes_adapter
     import quota
@@ -103,6 +105,35 @@ def _safe_text(value: Any, limit: int = 1000, secrets: tuple[str, ...] = ()) -> 
     return text[:limit]
 
 
+_JOURNAL_STARTED = False
+
+
+def _journal(kind: str, payload: dict[str, Any], data: dict[str, Any] | None = None) -> None:
+    """Best-effort diagnostic journal write; a failure never reaches task flow."""
+    try:
+        diagnostic_journal.append_event(_root(), kind, payload)
+    except Exception as exc:
+        message = f"diagnostic journal write failed ({type(exc).__name__})"
+        print(f"cli-router: {message}", file=sys.stderr)
+        if data is not None:
+            warnings = data.get("route_warnings") if isinstance(data.get("route_warnings"), list) else []
+            if message not in warnings:
+                warnings.append(message)
+            data["route_warnings"] = warnings
+
+
+def _journal_startup() -> None:
+    """Apply journal retention once per process, on the first dispatch."""
+    global _JOURNAL_STARTED
+    if _JOURNAL_STARTED:
+        return
+    _JOURNAL_STARTED = True
+    try:
+        diagnostic_journal.trim_journal(_root())
+    except Exception as exc:
+        print(f"cli-router: diagnostic journal trim failed ({type(exc).__name__})", file=sys.stderr)
+
+
 def _write(task_id: str, data: dict[str, Any]) -> None:
     path = _task_dir() / f"{task_id}.json"
     tmp = path.with_name(f".{task_id}.{uuid.uuid4().hex}.tmp")
@@ -131,6 +162,7 @@ def _read(task_id: str) -> dict[str, Any] | None:
 
 
 MAX_TASK_EVENTS = 100
+_TERMINAL_JOURNAL_STATES = {"completed", "blocked", "cancelled", "failed_verification", "interrupted"}
 
 
 def _transition(data: dict[str, Any], phase: str, event: str, message: str | None = None,
@@ -155,6 +187,13 @@ def _transition(data: dict[str, Any], phase: str, event: str, message: str | Non
         events = []
     events.append(entry)
     data["events"] = events[-MAX_TASK_EVENTS:]
+    if fields.get("finished_at") and data.get("state") in _TERMINAL_JOURNAL_STATES:
+        attempts = data.get("attempts")
+        _journal("task_finished", {
+            "task_id": data.get("task_id"), "state": data.get("state"), "phase": phase,
+            "error_class": data.get("error_class"),
+            "error": _safe_text(data.get("error_detail"), 300) if data.get("error_detail") else None,
+            "attempts": len(attempts) if isinstance(attempts, list) else 0}, data)
     _write(data["task_id"], data)
     with _STATE_CHANGED:
         _STATE_CHANGED.notify_all()
@@ -2428,6 +2467,7 @@ def _recover_action(args: dict[str, Any]) -> dict[str, Any]:
 
 def dispatch(args: dict[str, Any]) -> dict[str, Any]:
     action = args.get("action")
+    _journal_startup()
     if action in {"status", "wait"}:
         task_id = str(args.get("task_id", ""))
         data = _read(task_id)
@@ -2482,11 +2522,24 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             home = None
         checks = doctor.run_checks(home)
+        _journal("doctor_snapshot", {"checks": [{"name": c.get("name"), "status": c.get("status")}
+                                                for c in checks if isinstance(c, dict)]})
         return {"ok": True, "checks": checks}
+    if action == "diagnose":
+        try:
+            home = _root()
+            try:
+                checks = doctor.run_checks(home)
+            except Exception:
+                checks = []
+            path, report = diagnostic_journal.build_report(home, checks)
+        except Exception as exc:
+            return {"ok": False, "error": _safe_text(f"diagnose failed ({type(exc).__name__})", 300)}
+        return {"ok": True, "path": str(path), "report": report}
     if action == "recover":
         return _recover_action(args)
     if action != "submit":
-        return {"ok": False, "error": "action must be submit, wait, status, cancel, recover, or doctor"}
+        return {"ok": False, "error": "action must be submit, wait, status, cancel, recover, doctor, or diagnose"}
     task = args.get("task")
     if not isinstance(task, str) or not task.strip() or len(task) > 20000:
         return {"ok": False, "error": "task must be non-empty and at most 20,000 characters"}
@@ -2534,6 +2587,7 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
             "task_fingerprint": hashlib.sha256(task.encode()).hexdigest(),
             "criteria_count": len(criteria), "created_at": _stamp(), "attempts": [],
             "candidate_count": 0, "current_attempt": 0}
+    _journal("task_started", {"task_id": task_id, "repository": str(repo), "mode": mode}, data)
     # Route selection runs in the request's profile/credential scope; the worker thread runs in a
     # copy of that context so its only auth work (the Jev handoff) stays in the same scope.
     try:

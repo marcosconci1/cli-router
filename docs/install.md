@@ -53,7 +53,7 @@ Here `<plugin-dir>` is the directory Hermes reports after install, typically `~/
 python3 <plugin-dir>/doctor.py
 ```
 
-You can also ask Hermes to run the tool action `{"action": "doctor"}`. Every check prints `[ok]`, `[warn]`, or `[fail]` with a hint. `warn` entries describe reduced capability: deterministic ranking can proceed without Jev, but work retry handoff cannot. Missing or unauthenticated ai-memory and failed bubblewrap namespace probes are blockers. `fail` entries must be fixed before tasks will run.
+You can also ask Hermes to run the tool action `{"action": "doctor"}`. Every check prints `[ok]`, `[warn]`, or `[fail]` with a hint. `warn` entries describe reduced capability: deterministic ranking can proceed without Jev, but work retry handoff cannot. Missing or unauthenticated ai-memory and failed bubblewrap namespace probes are blockers. `fail` entries must be fixed before tasks will run. The `{"action": "diagnose"}` action writes a redacted bundle (version, Python and platform, doctor check statuses, the last 50 local journal lines, and the 10 most recent task states) to `runtime/cli-tasks/diagnose-<timestamp>.txt` and returns its path and text; it never includes prompts, repository paths, owner tokens, or command lines, and nothing leaves the machine.
 
 2. Submit a real task through the `cli_router` tool:
 
@@ -77,7 +77,7 @@ Optionally pin the worker to one CLI or model by adding `"cli": "claude"` or `"m
 
 ## Doctor
 
-`doctor.py` checks: bubblewrap availability and user namespaces, Git and `systemd-run`, installed provider CLIs, the ai-memory CLI and server, the Jev connection (optional for ranking, required for retry handoff), quota cache existence and staleness, and a writable `runtime/cli-tasks/` directory.
+`doctor.py` checks: bubblewrap availability and user namespaces, Git and `systemd-run`, installed provider CLIs, the ai-memory CLI and server, the Jev connection (optional for ranking, required for retry handoff), quota cache existence and staleness, and a writable `runtime/cli-tasks/` directory. The router also keeps a local journal at `runtime/cli-tasks/events.log.jsonl` (task start/finish and doctor snapshots), trimmed to 30 days and 1 MB.
 
 ## Development and tests
 

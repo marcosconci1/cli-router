@@ -10,7 +10,7 @@ TASK_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["submit", "wait", "status", "cancel", "doctor"]},
+            "action": {"type": "string", "enum": ["submit", "wait", "status", "cancel", "doctor", "diagnose"]},
             "repository": {"type": "string", "description": "Existing local Git repository path; required for submit."},
             "task": {"type": "string", "description": "Task for the CLI worker; required for submit."},
             "mode": {"type": "string", "enum": ["analysis", "change"]},

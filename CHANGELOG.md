@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add a local diagnostic journal (`runtime/cli-tasks/events.log.jsonl`, 30 days / 1 MB retention) and a `diagnose` action that writes a redacted bundle for bug reports. No telemetry and no network calls.
+
 ## 0.4.1
 
 - Add a tokenless `recover` action: reaps dead tasks of a repository to `interrupted` with a checkpoint capture, guarded by the repository lock, so a crashed orchestrator no longer needs the owner token to clean up.
