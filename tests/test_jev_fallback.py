@@ -55,6 +55,16 @@ class JevFallback(unittest.TestCase):
             out = run()
         self.assertEqual([c["model"] for c in out[-2:]], ["unknown-a", "unknown-b"])
 
+    def test_design_arena_best_matching_elo_primary_for_visual_tasks(self):
+        index = {"models": {
+            "vendor/low": {"design": {"website": 1100, "uicomponent": 1200}},
+            "vendor/high": {"design": {"website": 1300}},
+        }, "max_coding": 0, "max_intelligence": 0}
+        candidates = [{"cli": "opencode", "model": "vendor/low"},
+                      {"cli": "opencode", "model": "vendor/high"}]
+        ranked = tm._fallback_rank(candidates, index, "Build a website UI")
+        self.assertEqual(ranked, [candidates[1], candidates[0]])
+
     def test_fallback_records_route_warning_without_task_prompt(self):
         task_id = "a" * 32
         marker = "private-routing-prompt"

@@ -632,6 +632,10 @@ ROUTE_INSTRUCTIONS = (
     "Do not substitute predecessor scores, invent missing costs, or let cost inflate quality. "
     "Operator notes are weaker owner evidence where exact benchmarks are missing. Routine, small or well-specified work (single-file "
     "edits, styling, renames, lookups, analysis) goes to the cheapest adequate option at low or medium effort. "
+    "For creative, visual, or document tasks (websites, UI components, diagrams, charts, slides, documents, games), "
+    "the design_arena block carries crowdsourced Design Arena ELO per matching category and is the primary quality "
+    "evidence for that medium; coding benchmarks do not transfer to it. Compare ELO per category; never average "
+    "across categories or across different benchmark surfaces. "
     "Escalate to a 100-point model or high effort only when the task is multi-file, ambiguous, architectural, "
     "a hard debugging problem, or security-sensitive (auth, input handling, secrets, permissions). Among Kimi "
     "routes, use K3.1 Pro for those complex tasks; K2.8 (kimi-for-coding) is the cost-first routine option. "
@@ -698,9 +702,10 @@ def _observed(candidate: dict[str, Any], now: float | None = None) -> dict[str, 
     return observed
 
 
-def _profiled(candidate: dict[str, Any], index: dict[str, Any]) -> dict[str, Any]:
+def _profiled(candidate: dict[str, Any], index: dict[str, Any],
+              categories: list[str] | None = None) -> dict[str, Any]:
     """The Jev-facing view of a route: launch fields, local outcomes, and benchmark evidence."""
-    profile = route_benchmark.profile(candidate, index)
+    profile = route_benchmark.profile(candidate, index, categories)
     return {**candidate, "observed": _observed(candidate), **({"profile": profile} if profile else {})}
 
 
@@ -735,6 +740,45 @@ def _provider_toggles() -> dict[str, bool]:
     return toggles
 
 
+def _model_toggles() -> dict[str, bool]:
+    """Read model toggles from configuration. Fail-open on missing or malformed shape."""
+    if not hermes_adapter.has_context():
+        return {}
+    try:
+        raw = hermes_adapter.get_config("routing.models", None)
+        if raw is None:
+            raw = hermes_adapter.get_config("cli-router", {})
+        if isinstance(raw, dict) and any(key in raw for key in ("routing.models", "routing", "settings")):
+            cfg = raw
+            raw = cfg.get("routing.models")
+            if raw is None and isinstance(cfg.get("routing"), dict):
+                raw = cfg["routing"].get("models")
+            if raw is None and isinstance(cfg.get("settings"), dict):
+                settings = cfg["settings"]
+                raw = settings.get("routing.models")
+                if raw is None and isinstance(settings.get("routing"), dict):
+                    raw = settings["routing"].get("models")
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    toggles: dict[str, bool] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and isinstance(value, bool):
+            toggles[key] = value
+        else:
+            return {}
+    return toggles
+
+
+def _filter_candidates_by_model_toggle(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    toggles = _model_toggles()
+    if not toggles:
+        return candidates
+    return [candidate for candidate in candidates
+            if toggles.get(str(candidate.get("model") or ""), True)]
+
+
 def _record_provider_toggle(task_id: str | None, hidden_clis: list[str],
                             in_memory_data: dict[str, Any] | None = None) -> None:
     if not task_id or not re.fullmatch(r"[0-9a-f]{32}", task_id):
@@ -757,19 +801,17 @@ def _record_provider_toggle(task_id: str | None, hidden_clis: list[str],
 def _filter_candidates_by_toggle(candidates: list[dict[str, Any]], task_id: str | None = None,
                                  in_memory_data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     toggles = _provider_toggles()
-    if not toggles:
-        return candidates
     active = []
     hidden_clis = set()
     for c in candidates:
         cli = c.get("cli")
-        if cli in toggles and not toggles[cli]:
+        if toggles and cli in toggles and not toggles[cli]:
             hidden_clis.add(str(cli))
         else:
             active.append(c)
     if hidden_clis:
         _record_provider_toggle(task_id, sorted(hidden_clis), in_memory_data=in_memory_data)
-    return active
+    return _filter_candidates_by_model_toggle(active)
 
 
 def _record_jev_answer(task_id: str | None, question: str, choice: Any, options: list[str],
@@ -813,19 +855,28 @@ def _jev_run(service, request: dict[str, Any], failure: str) -> dict[str, Any]:
     raise RuntimeError(failure)
 
 
-def _fallback_rank(candidates: list[dict[str, Any]], index: dict[str, Any]) -> list[dict[str, Any]]:
+def _fallback_rank(candidates: list[dict[str, Any]], index: dict[str, Any],
+                   task: str | None = None) -> list[dict[str, Any]]:
     """Deterministic ordering used when Jev is unavailable: higher benchmark score first,
     unscored candidates last, ties on lower campaign cost, then original order (stable)."""
-    def key(candidate: dict[str, Any]) -> tuple[int, float, float]:
+    categories = route_benchmark.detect_design_categories(task or "") if task else []
+
+    def key(candidate: dict[str, Any]) -> tuple[Any, ...]:
         try:
-            profile = route_benchmark.profile(candidate, index) or {}
+            profile = route_benchmark.profile(candidate, index, categories) or {}
         except Exception:
             profile = {}
+        design = profile.get("design_arena") or {}
+        design_score = max((value for value in design.values()
+                            if isinstance(value, (int, float)) and not isinstance(value, bool)), default=None)
         score = profile.get("composite_quality")
         score = float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else None
         cost = (profile.get("akita_v4") or {}).get("run_cost_usd")
         cost = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else float("inf")
-        return (0, -score, cost) if score is not None else (1, 0.0, float("inf"))
+        composite_key = (0, -score, cost) if score is not None else (1, 0.0, float("inf"))
+        if categories:
+            return ((0, -design_score) if design_score is not None else (1, 0.0)) + composite_key
+        return composite_key
     return sorted(candidates, key=key)
 
 
@@ -833,12 +884,15 @@ def _jev_choose(task: str, candidates: list[dict[str, Any]], *, one_at_a_time: b
                 purpose: str = "work", _position: int = 0, task_id: str | None = None,
                 in_memory_data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Jev ranking when available and configured; otherwise a deterministic benchmark ordering."""
+    candidates = _filter_candidates_by_model_toggle(candidates)
+    if not candidates:
+        return []
     try:
         return _jev_choose_pinned(task, candidates, one_at_a_time=one_at_a_time, purpose=purpose,
                                   _position=_position, task_id=task_id, in_memory_data=in_memory_data)
     except Exception as exc:
         _record_route_warning(task_id, purpose, exc, in_memory_data=in_memory_data)
-        ranked = _fallback_rank(candidates, _benchmark_index())
+        ranked = _fallback_rank(candidates, _benchmark_index(), task)
         if purpose == "review":
             seen, unique = set(), []
             for c in ranked:
@@ -861,10 +915,11 @@ def _jev_choose_pinned(task: str, candidates: list[dict[str, Any]], *, one_at_a_
             conn.get("model") != "typesafe/jev-1.14"):
         raise RuntimeError("Jev is not configured for the pinned OpenRouter model")
     index = _benchmark_index()
+    categories = route_benchmark.detect_design_categories(task)
     if one_at_a_time:
         accepted = []
         for candidate in candidates:
-            result = _jev_run(service, {"state": {"task": task, "candidate": _profiled(candidate, index)}, "questions": {
+            result = _jev_run(service, {"state": {"task": task, "candidate": _profiled(candidate, index, categories)}, "questions": {
                 "fit": {"type": "choice", "instructions": "Choose whether this candidate can perform this task within the stated route limits. " + OBSERVED_INSTRUCTIONS,
                         "criteria": {"eligible": "Suitable and capability-safe for the task", "reject": "Unsuitable or unverifiable"}}}},
                               "Jev candidate assessment failed")
@@ -876,7 +931,7 @@ def _jev_choose_pinned(task: str, candidates: list[dict[str, Any]], *, one_at_a_
                 accepted.append(candidate)
         return accepted
     keys = [f"route_{i}" for i in range(len(candidates))]
-    shown = [_profiled(candidate, index) for candidate in candidates]
+    shown = [_profiled(candidate, index, categories) for candidate in candidates]
     criteria = {key: json.dumps(candidate, sort_keys=True) for key, candidate in zip(keys, shown)}
     criteria["stop"] = "No candidate is suitable or safely verifiable"
     review_objective = (
@@ -892,6 +947,10 @@ def _jev_choose_pinned(task: str, candidates: list[dict[str, Any]], *, one_at_a_
         + review_objective + " Akita 2026-10-28 exact-model/harness evidence is primary; "
         "OpenRouter benchmarks are the fallback for models missing from Akita. "
         "Compare published engineering breadth and security vigilance in context, not as identical scales. "
+        "For creative, visual, or document tasks (websites, UI components, diagrams, charts, slides, documents, games), "
+        "the design_arena block carries crowdsourced Design Arena ELO per matching category and is the primary quality "
+        "evidence for that medium; coding benchmarks do not transfer to it. Compare ELO per category; never average "
+        "across categories or across different benchmark surfaces. "
         "Campaign dollars, per-token prices and subscription quota are distinct; OAuth $0 is not zero quota. "
         "Never borrow predecessor results or invent unknown measurements. "
         "Choose stop when no suitable route exists. " + OBSERVED_INSTRUCTIONS

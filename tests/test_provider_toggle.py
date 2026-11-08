@@ -207,6 +207,29 @@ class ProviderToggleTests(unittest.TestCase):
             finally:
                 tm._root = old_root
 
+    def test_model_toggle_default_and_malformed_settings_fail_open(self):
+        ctx = Mock()
+        candidates = [{"cli": "codex", "model": "gpt-6-luna"},
+                      {"cli": "opencode", "model": "vendor/disabled:free"}]
+        for setting in (None, "malformed", ["vendor/disabled:free"],
+                        {"vendor/disabled:free": "false"}, {42: False}):
+            with self.subTest(setting=setting):
+                ctx.get_config.side_effect = lambda key, default, value=setting: value if key == "routing.models" else {}
+                with patch.object(hermes_adapter, "_CONTEXT", ctx):
+                    self.assertEqual(tm._filter_candidates_by_toggle(candidates), candidates)
+
+    def test_disabled_model_is_removed_from_work_and_review_candidate_sets(self):
+        ctx = Mock()
+        ctx.get_config.return_value = {"routing.models": {"vendor/disabled:free": False}}
+        candidates = [{"cli": "codex", "model": "gpt-6-luna"},
+                      {"cli": "opencode", "model": "vendor/disabled:free"}]
+        with patch.object(hermes_adapter, "_CONTEXT", ctx), \
+             patch.object(tm, "_jev_choose_pinned", side_effect=lambda task, pool, **kw: pool):
+            for purpose in ("work", "review"):
+                with self.subTest(purpose=purpose):
+                    selected = tm._jev_choose("build a page", candidates, purpose=purpose)
+                    self.assertEqual(selected, [candidates[0]])
+
     def test_review_routing_applies_toggle(self):
         task_id = "d" * 32
         ctx = Mock()
