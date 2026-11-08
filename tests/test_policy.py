@@ -1148,6 +1148,17 @@ class PolicyTests(unittest.TestCase):
             unavailable["cache"]["providers"]["openrouter"]["unavailable_reason"] = "authentication failed"
             self.assertFalse(tm._openrouter_quota_available(unavailable, "selected-key")[0])
 
+    def test_openrouter_quota_error_includes_exception_cause(self):
+        from unittest.mock import patch
+        quota = {"fresh": True, "cache": {"providers": {"openrouter": {
+            "windows": [{"label": "Key 1 (native) free models daily requests", "remaining": 10}],
+        }}}}
+        with patch.object(tm, "_quota_plugin", side_effect=RuntimeError("quota plugin boom")):
+            available, reason = tm._openrouter_quota_available(quota, "selected-key")
+        self.assertEqual(available, False)
+        self.assertIn("RuntimeError", reason)
+        self.assertIn("quota plugin boom", reason)
+
     def test_quota_view_expands_accounts_and_marks_unknown_remaining(self):
         import json
         import importlib.util

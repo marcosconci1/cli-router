@@ -1098,8 +1098,9 @@ def _openrouter_quota_available(quota: dict[str, Any], secret: str) -> tuple[boo
         if window.get("remaining") is None and window.get("used_percent") is None:
             return True, "quota remaining is unknown; finite provider-classified attempts allowed"
         return _remaining({"windows": matches})
-    except Exception:
-        return False, "OpenRouter quota or credential identity is unavailable"
+    except Exception as exc:
+        return False, _safe_text(
+            f"OpenRouter quota or credential identity is unavailable: {type(exc).__name__}: {exc}", 200)
 
 
 def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, task_id: str,
