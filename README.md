@@ -1,6 +1,16 @@
-# cli-router
+<p align="center">
+  <img src="docs/banner.png" alt="cli-router" width="360"/>
+</p>
 
-> A task router for Hermes Agent. Submit a coding task, and the AI CLI with real quota room builds it, commits it on your branch, and passes two independent reviews before it is done.
+<p align="center">
+  [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
+  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"/>
+</p>
+
+<p align="center">
+  <b>A task router for Hermes Agent.</b> Submit a coding task, and the AI CLI with real quota room builds it, commits it on your branch, and passes two independent reviews before it is done.
+</p>
+
 
 Developers who use AI coding CLIs manage several subscriptions at once. Each CLI has its own usage limit, and the limits reset on different schedules. Someone has to track them. When the CLI in use hits its limit in the middle of a task, the person switches tools by hand, restarts the task, and explains the context again. While one subscription is exhausted, the others sit idle.
 
