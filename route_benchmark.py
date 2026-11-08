@@ -78,18 +78,59 @@ OPERATOR_NOTES = {
                          "does not mean zero quota consumption or zero API cost."),
 }
 
+# Creative task signals map to the Design Arena benchmark surfaces they can
+# meaningfully use. Keep category scores separate; these are not one scale.
+DESIGN_CATEGORY_MAP = {
+    "website": ["website", "uicomponent", "svg"],
+    "ui": ["website", "uicomponent", "svg"],
+    "frontend": ["website", "uicomponent", "svg"],
+    "uicomponent": ["website", "uicomponent", "svg"],
+    "landing": ["website", "uicomponent", "svg"],
+    "page": ["website", "uicomponent", "svg"],
+    "pdf": ["pdf", "spreadsheet", "pptxslides", "htmlslides"],
+    "document": ["pdf", "spreadsheet", "pptxslides", "htmlslides"],
+    "report": ["pdf", "spreadsheet", "pptxslides", "htmlslides"],
+    "spreadsheet": ["pdf", "spreadsheet", "pptxslides", "htmlslides"],
+    "excel": ["pdf", "spreadsheet", "pptxslides", "htmlslides"],
+    "slides": ["pdf", "spreadsheet", "pptxslides", "htmlslides"],
+    "presentation": ["pdf", "spreadsheet", "pptxslides", "htmlslides"],
+    "pptx": ["pdf", "spreadsheet", "pptxslides", "htmlslides"],
+    "game": ["gamedev"],
+    "chart": ["dataviz"],
+    "diagram": ["dataviz"],
+    "plot": ["dataviz"],
+    "dashboard": ["dataviz"],
+    "visualization": ["dataviz"],
+    "logo": ["graphicdesign"],
+    "graphic": ["graphicdesign"],
+}
+
 _CACHE: dict[str, Any] = {"at": 0.0, "index": None}
 
 
 def openrouter_index(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """``{"models": {id: signals}, "max_coding", "max_intelligence"}`` from coding-ordered catalog rows."""
-    models, rank = {}, 0
+    """Build coding and Design Arena evidence from catalog rows."""
+    models, rank, design_values = {}, 0, {}
     for row in rows:
         mid = row.get("id")
         if not isinstance(mid, str) or mid.endswith(":batch"):
             continue
         rank += 1
         aa = (row.get("benchmarks") or {}).get("artificial_analysis") or {}
+        raw_design = (row.get("benchmarks") or {}).get("design_arena") or {}
+        design = {}
+        if isinstance(raw_design, dict):
+            design_entries = raw_design.items()
+        elif isinstance(raw_design, list):
+            design_entries = ((entry.get("category"), entry.get("elo"))
+                              for entry in raw_design if isinstance(entry, dict))
+        else:
+            design_entries = ()
+        for category, elo in design_entries:
+            numeric = _number(elo)
+            if isinstance(category, str) and numeric is not None:
+                design[category] = max(numeric, design.get(category, numeric))
+                design_values.setdefault(category, []).append(numeric)
         pricing = row.get("pricing") or {}
         try:
             # Blended 1:3 input:output, per million tokens.
@@ -103,9 +144,12 @@ def openrouter_index(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "agentic_index": _number(aa.get("agentic_index")),
             "usd_per_mtok": blended,
         }.items() if value is not None}
+        if design:
+            models[mid]["design"] = design
     return {"models": models,
             "max_coding": max((m.get("coding_index", 0) for m in models.values()), default=0),
-            "max_intelligence": max((m.get("intelligence_index", 0) for m in models.values()), default=0)}
+            "max_intelligence": max((m.get("intelligence_index", 0) for m in models.values()), default=0),
+            "max_design": {category: max(values) for category, values in design_values.items()}}
 
 
 def load(fetch: Callable[[], list[dict[str, Any]]], snapshot: Path, now: float | None = None) -> dict[str, Any]:
@@ -139,7 +183,22 @@ def route_key(candidate: dict[str, Any]) -> str:
     return model
 
 
-def profile(candidate: dict[str, Any], index: dict[str, Any]) -> dict[str, Any] | None:
+def detect_design_categories(task_text: str) -> list[str]:
+    """Return relevant Design Arena categories in map order, without duplicates."""
+    task = task_text.lower()
+    categories = []
+    for keyword, mapped in DESIGN_CATEGORY_MAP.items():
+        matched = (re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", task)
+                   if keyword in {"ui", "pdf", "pptx", "excel"} else keyword in task)
+        if matched:
+            for category in mapped:
+                if category not in categories:
+                    categories.append(category)
+    return categories
+
+
+def profile(candidate: dict[str, Any], index: dict[str, Any],
+            categories: list[str] | None = None) -> dict[str, Any] | None:
     """The combined benchmark profile for one route, or None when nothing is known about it."""
     key = route_key(candidate)
     models = index.get("models") or {}
@@ -177,6 +236,12 @@ def profile(candidate: dict[str, Any], index: dict[str, Any]) -> dict[str, Any] 
         result["akita_partial"] = AKITA_PARTIAL[akita_key]
     if signals:
         result["openrouter"] = signals
+    if categories:
+        design = signals.get("design") if signals else None
+        matching = {category: design[category] for category in categories
+                    if isinstance(design, dict) and category in design}
+        if matching:
+            result["design_arena"] = matching
     if key in OPERATOR_NOTES:
         result["note"] = OPERATOR_NOTES[key]
     return result or None

@@ -1,5 +1,7 @@
 import unittest
 import sys
+import json
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -69,3 +71,52 @@ class UpdatedBenchmarkTests(unittest.TestCase):
         self.assertEqual(api["akita_v4"]["score"], 90.5)
         self.assertEqual(api["akita_v4"]["run_cost_usd"], 15.98)
         self.assertNotIn("akita_engineering", api)
+
+    def test_design_arena_index_and_requested_profile_are_additive(self):
+        index = bench.openrouter_index([{
+            "id": "design/model-a",
+            "benchmarks": {"artificial_analysis": {"coding_index": 20},
+                           "design_arena": [{"category": "website", "elo": 1200},
+                                            {"category": "dataviz", "elo": 1110},
+                                            {"category": "ignored", "elo": "bad"},
+                                            {"category": 4, "elo": 99},
+                                            {"category": "boolean", "elo": True}]},
+        }, {
+            "id": "design/model-b",
+            "benchmarks": {"design_arena": {"website": 1300}},
+        }])
+        self.assertEqual(index["max_design"], {"website": 1300.0, "dataviz": 1110.0})
+        self.assertEqual(index["models"]["design/model-a"]["coding_index"], 20.0)
+        self.assertEqual(index["models"]["design/model-a"]["design"],
+                         {"website": 1200.0, "dataviz": 1110.0})
+        self.assertNotIn("design_arena", bench.profile(
+            {"cli": "opencode", "model": "design/model-a"}, index))
+        profile = bench.profile({"cli": "opencode", "model": "design/model-a"},
+                                index, ["website", "pdf"])
+        self.assertEqual(profile["design_arena"], {"website": 1200.0})
+        self.assertNotIn("design_arena", bench.profile(
+            {"cli": "opencode", "model": "design/model-a"}, index, ["pdf"]))
+
+    def test_design_category_detection_is_ordered_and_deduplicated(self):
+        self.assertEqual(bench.detect_design_categories("Build a WEBSITE landing page and UI component"),
+                         ["website", "uicomponent", "svg"])
+        self.assertEqual(bench.detect_design_categories("Make a PDF report with Excel charts and slides"),
+                         ["pdf", "spreadsheet", "pptxslides", "htmlslides", "dataviz"])
+        self.assertEqual(bench.detect_design_categories("Fix a Python import"), [])
+
+    def test_snapshot_without_design_fields_still_loads(self):
+        with tempfile.TemporaryDirectory() as temp:
+            snapshot = Path(temp) / "snapshot.json"
+            snapshot.write_text(json.dumps({"models": {"vendor/model": {"coding_index": 12}},
+                                            "max_coding": 12, "max_intelligence": 0}))
+            previous_cache = bench._CACHE.copy()
+            try:
+                bench._CACHE.update(at=0, index=None)
+                loaded = bench.load(lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+                                    snapshot, now=100)
+            finally:
+                bench._CACHE.update(previous_cache)
+        self.assertEqual(loaded["models"]["vendor/model"]["coding_index"], 12)
+        self.assertNotIn("max_design", loaded)
+        self.assertNotIn("design_arena", bench.profile(
+            {"cli": "opencode", "model": "vendor/model"}, loaded, ["website"]))
