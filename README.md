@@ -5,10 +5,11 @@
 <p align="center">
   [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"/>
+  <a href="https://github.com/marcosconci1/cli-router/actions/workflows/tests.yml"><img src="https://github.com/marcosconci1/cli-router/actions/workflows/tests.yml/badge.svg" alt="Tests"/></a>
 </p>
 
 <p align="center">
-  <b>A task router for Hermes Agent.</b> Submit a coding task, and the AI CLI with real quota room builds it, commits it on your branch, and passes two independent reviews before it is done.
+  <b>Route coding tasks across AI CLIs by live quota, with two independent reviews.</b> cli-router brings this capability to Hermes Agent. Submit a coding task, and the AI CLI with real quota room builds it, commits it on your branch, and passes two independent reviews before it is done.
 </p>
 
 
