@@ -1478,6 +1478,29 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(killpg.call_args_list[2].args, (process.pid, signal.SIGKILL))
         self.assertEqual(process.timeouts, [2, 5])
 
+    def test_timeout_stays_visible_when_memory_cannot_confirm_the_killed_attempt(self):
+        import subprocess
+        import signal
+        from unittest.mock import patch
+        class Process:
+            pid = 424243
+            returncode = None
+            def communicate(self, **kwargs):
+                raise subprocess.TimeoutExpired("agy", kwargs["timeout"])
+            def wait(self, **kwargs): return -signal.SIGTERM
+        with patch.dict("os.environ", {"AI_MEMORY_AUTH_TOKEN": "mock-token"}), \
+             patch.object(tm.ai_memory_bridge, "_parent_env", return_value={"AI_MEMORY_AUTH_TOKEN": "mock-token"}), \
+             patch.object(tm.subprocess, "Popen", return_value=Process()), \
+             patch.object(tm.os, "killpg"), patch.object(tm, "MAX_TASK_SECONDS", 2), \
+             patch.object(tm.ai_memory_bridge, "verify_runtime"), \
+             patch.object(tm.ai_memory_bridge, "find_workstream", return_value="a" * 36), \
+             patch.object(tm.ai_memory_bridge, "verify_attempt",
+                          side_effect=tm.ai_memory_bridge.AiMemoryError("ai-memory did not persist")):
+            result = tm._run_candidate({"cli": "codex", "model": "gpt-6-luna", "effort": "low"},
+                                       "inspect", Path.cwd(), "analysis", "2" * 32, [])
+        self.assertEqual(result["outcome"], "memory_blocked")  # failover still fails closed
+        self.assertIn("30 minute task limit", result["reason"])
+
 
     def test_preexisting_dirty_files_do_not_fail_the_workers_verification(self):
         import subprocess

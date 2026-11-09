@@ -1377,8 +1377,14 @@ def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, 
             sequence = ai_memory_bridge.verify_attempt(memory_repo, stream_id, task_id, attempt_index,
                                                        cli=cli, run_stderr=completed.stderr or "")
         except ai_memory_bridge.AiMemoryError as exc:
+            reason = _safe_text(str(exc), 300)
+            if terminal_override == "timeout":
+                # Stopping the worker also stops ai-memory's run wrapper before it can finalize the
+                # session, so the timeout is the cause and must stay visible in the reason.
+                reason = "worker exceeded the 30 minute task limit and was stopped before ai-memory " \
+                         f"confirmed the attempt ({reason})"
             return {"outcome": "memory_blocked", "returncode": completed.returncode,
-                    "reason": _safe_text(str(exc), 300), "stdout": output, "stderr": err}
+                    "reason": reason, "stdout": output, "stderr": err}
         memory_ref = {"workstream_id": stream_id, "workstream_name": stream_name,
                       "latest_sequence": sequence}
     if terminal_override == "timeout":

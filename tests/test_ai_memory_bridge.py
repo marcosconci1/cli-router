@@ -145,7 +145,48 @@ class AiMemoryBridgeTests(unittest.TestCase):
         with patch.object(bridge, "read_context", side_effect=AssertionError("strict reader used")), \
              patch.object(bridge, "_command", return_value=json.dumps(event_rows)) as command:
             self.assertEqual(bridge.verify_attempt(Path("/repo"), "d" * 36, task_id, 1), 9)
-        self.assertEqual(command.call_args.args[0][-1], task_id)
+        searches = [call.args[0] for call in command.call_args_list]
+        self.assertIn(f'"Code task {task_id} attempt 1"', searches[0])
+        self.assertNotIn(task_id, searches[1])
+
+    def test_attempt_confirmation_survives_task_id_noise(self):
+        """Regression: tool calls naming the task's scratch path must not hide the prompt."""
+        task_id = "a" * 32
+        marker = f"Code task {task_id} attempt 1"
+        noise = [{"sequence": n, "kind": "tool_call", "role": "assistant",
+                  "content": f"exec: ls /tmp/hermes-agent-{task_id}"} for n in range(2, 40)]
+        prompt = {"sequence": 1, "kind": "message", "role": "user", "content": f"{marker}. Do it."}
+
+        def command(args, _cwd, timeout=20):
+            limit, query = int(args[args.index("--limit") + 1]), args[-1]
+            if query == f'"{marker}"':
+                return json.dumps([prompt])
+            if query == task_id:  # relevance-ranked: the prompt loses to the noise
+                return json.dumps(noise[:limit])
+            return json.dumps(sorted([prompt, *noise], key=lambda r: -r["sequence"])[:limit])
+
+        with patch.object(bridge, "_command", side_effect=command):
+            self.assertEqual(bridge.verify_attempt(Path("/repo"), "b" * 36, task_id, 1, cli="codex"), 39)
+
+    def test_read_context_finds_required_marker_beyond_newest_window(self):
+        task_id = "b" * 32
+        marker = f"Code task {task_id} attempt 1"
+        recent = [{"sequence": n, "kind": "message", "role": "assistant", "content": f"step {n}"}
+                  for n in range(60, 20, -1)]
+
+        def command(args, _cwd, timeout=20):
+            if args[-1] == f'"{marker}"':
+                return json.dumps([{"sequence": 1, "kind": "message", "role": "user",
+                                    "content": f"{marker}. Do it."}])
+            return json.dumps(recent)
+
+        with patch.object(bridge, "_command", side_effect=command):
+            _packet, sequence = bridge.read_context(Path("/repo"), "c" * 36, required_marker=marker)
+        self.assertEqual(sequence, 60)
+        with patch.object(bridge, "_command", side_effect=lambda args, *_a, **_k:
+                          "[]" if args[-1].startswith('"') else json.dumps(recent)):
+            with self.assertRaises(bridge.AiMemoryError):
+                bridge.read_context(Path("/repo"), "c" * 36, required_marker=marker)
 
     def test_agy_attempt_confirmation_uses_hook_page_when_ledger_is_empty(self):
         task_id = "d" * 32

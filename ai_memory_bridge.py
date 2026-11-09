@@ -122,7 +122,11 @@ def read_context(cwd: Path, stream_id: str, *, required_marker: str | None = Non
     if not events:
         raise AiMemoryError("task workstream has no persisted attempt context")
     events.sort(key=lambda row: row["sequence"])
-    if required_marker is not None and not any(required_marker in event["content"] for event in events):
+    if (required_marker is not None
+            and not any(required_marker in event["content"] for event in events)
+            and not any(isinstance(row, dict) and required_marker in str(row.get("content", ""))
+                        for row in _ledger_rows(cwd, stream_id, f'"{required_marker}"', limit=100))):
+        # The prompt leads its attempt, so in a long run it can fall outside the newest 40.
         raise AiMemoryError("prior attempt is absent from canonical memory; failover stopped")
     latest = events[-1]["sequence"]
     lines = [
@@ -200,15 +204,12 @@ def verify_attempt(cwd: Path, stream_id: str, task_id: str, attempt: int, *,
     the strict handoff-context reader.
     """
     marker = f"Code task {task_id} attempt {attempt}"
-    raw = _command(["workstream-search", "--workstream-id", stream_id,
-                    "--limit", "10", "--json", task_id], cwd)
-    try:
-        rows = json.loads(raw)
-    except (TypeError, ValueError):
-        raise AiMemoryError("ai-memory returned an invalid workstream ledger") from None
-    if not isinstance(rows, list):
-        raise AiMemoryError("ai-memory returned an invalid workstream ledger")
-    sequence = max((row["sequence"] for row in rows
+    # A bare task-id search ranks every tool call that mentions the task's scratch paths, so a
+    # small limit can push the prompt out of the results. Search the exact marker phrase instead,
+    # and read the latest sequence from an unfiltered newest-first lookup.
+    rows = _ledger_rows(cwd, stream_id, f'"{marker}"', limit=100)
+    latest = _ledger_rows(cwd, stream_id, None, limit=1)
+    sequence = max((row["sequence"] for row in [*rows, *latest]
                     if isinstance(row, dict) and isinstance(row.get("sequence"), int)), default=0)
     if any(isinstance(row, dict) and marker in str(row.get("content", "")) for row in rows):
         return sequence
@@ -217,6 +218,19 @@ def verify_attempt(cwd: Path, stream_id: str, task_id: str, attempt: int, *,
     raise AiMemoryError(
         "ai-memory did not persist the current attempt and no agy hook session confirms it; "
         "failover stopped")
+
+
+def _ledger_rows(cwd: Path, stream_id: str, query: str | None, *, limit: int) -> list:
+    args = ["workstream-search", "--workstream-id", stream_id, "--limit", str(limit), "--json"]
+    if query is not None:
+        args.append(query)
+    try:
+        rows = json.loads(_command(args, cwd))
+    except (TypeError, ValueError):
+        raise AiMemoryError("ai-memory returned an invalid workstream ledger") from None
+    if not isinstance(rows, list):
+        raise AiMemoryError("ai-memory returned an invalid workstream ledger")
+    return rows
 
 
 def _hook_session_has_marker(cwd: Path, run_stderr: str, marker: str) -> bool:
