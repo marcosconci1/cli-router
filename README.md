@@ -75,7 +75,13 @@ list of installed options.
 
 * Linux with bubblewrap (`bwrap`), Git, and `systemd-run`.
 * At least one authenticated provider CLI (`codex`, `kimi`, `agy`, `claude`, or `opencode`).
-* An ai-memory CLI and server, for cross attempt memory and the review gate.
+* Optional: an ai-memory CLI and server for managed cross-attempt memory and ledger-confirmed reviews.
+
+## Optional ai-memory integration
+
+Set `ai-memory: enabled | disabled | auto` in the `cli-router` settings in your Hermes profile. The default is `auto`: cli-router uses managed ai-memory when it is available and runs standalone when it is not. `enabled` requires managed ai-memory; `disabled` always runs standalone.
+
+Standalone runs invoke the CLI directly and reviews run without ledger confirmation. Standalone mode has no cross-attempt handoff memory and allows only one worker attempt per task.
 
 ## Documentation
 

@@ -1,4 +1,5 @@
 import sys
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -80,6 +81,60 @@ class AiMemoryModeTests(unittest.TestCase):
         self.assertEqual(result["state"], "blocked")
         self.assertIn("ai-memory prerequisite failed", result["message"])
         verify.assert_called_once()
+
+    def test_standalone_candidate_runs_raw_cli_without_memory_auth_or_wrapper(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.dict("os.environ", {}, clear=True), \
+             patch.object(tm, "_installed_cli", return_value="/usr/bin/codex"), \
+             patch.object(tm.worker_resources, "scope_command", side_effect=lambda command, *_: command), \
+             patch.object(tm.worker_resources, "acquire", return_value=type(
+                 "Lease", (), {"fd": 0, "close": lambda self: None})()), \
+             patch.object(tm.subprocess, "Popen", return_value=type(
+                 "Process", (), {"returncode": 0, "communicate": lambda self, **_: ("", "")})()) as popen, \
+             patch.object(tm.ai_memory_bridge, "managed_command", side_effect=AssertionError("managed wrapper called")), \
+             patch.object(tm.ai_memory_bridge, "verify_runtime", side_effect=AssertionError("runtime check called")), \
+             patch.object(tm.ai_memory_bridge, "verify_attempt", side_effect=AssertionError("ledger check called")):
+            outcome = tm._run_candidate(
+                {"cli": "codex", "model": "gpt-6-luna", "effort": "low"}, "inspect",
+                Path(temporary), "change", "a" * 32, [], memory_mode="standalone")
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:2], ["/usr/bin/codex", "codex"])
+        self.assertEqual(outcome["outcome"], "needs_verification")
+        self.assertIsNone(outcome["ai_memory"])
+
+    def test_standalone_worker_stops_after_one_attempt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "repo"
+            repo.mkdir()
+            state = root / "state"
+            task_id = "b" * 32
+            candidates = [
+                {"cli": "codex", "provider": "openai", "model": "first", "effort": "low"},
+                {"cli": "kimi", "provider": "moonshot", "model": "second", "effort": None},
+            ]
+            with patch.object(tm, "_root", return_value=state), \
+                 patch.object(tm, "_lock_path", return_value=root / "repo.lock"), \
+                 patch.object(tm, "_write", wraps=tm._write), \
+                 patch.object(tm, "_git_readonly", return_value=type("Result", (), {"stdout": ""})()), \
+                 patch.object(tm, "_git_changed_paths", return_value=[]), \
+                 patch.object(tm, "_path_digests", return_value={}), \
+                 patch.object(tm, "_candidate_has_quota", return_value=True), \
+                 patch.object(tm, "_independent_checks", return_value={"changed_files": []}), \
+                 patch.object(tm, "_run_candidate", return_value={"outcome": "model_unavailable"}) as run, \
+                 patch.object(tm.ai_memory_bridge, "verify_runtime", side_effect=AssertionError("runtime check called")), \
+                 patch.object(tm.ai_memory_bridge, "read_context", side_effect=AssertionError("context read called")), \
+                 patch.object(tm, "_jev_handoff", side_effect=AssertionError("handoff called")):
+                tm._write(task_id, {"task_id": task_id, "state": "queued",
+                                    "ai_memory": {"mode": "standalone"}})
+                tm._worker(task_id, repo, "inspect", "change", [], candidates, None)
+                data = tm._read(task_id)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.kwargs["memory_mode"], "standalone")
+        self.assertEqual(data["state"], "failed_verification")
+        self.assertEqual(len(data["attempts"]), 1)
+        self.assertIsNone(data["attempts"][0]["ai_memory"])
+        self.assertNotIn("memory_check_started", [event["event"] for event in data["events"]])
 
     def test_doctor_status_follows_configured_mode(self):
         class Context:

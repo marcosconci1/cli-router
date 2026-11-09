@@ -406,7 +406,7 @@ class OrchestrationTests(unittest.TestCase):
         review = {"passed": False, "summary": "VERDICT: FAIL", "reviews": [
             {"route": {"cli": "codex", "model": "reviewer-model"},
              "worker_outcome": "needs_verification", "attempt_index": 2}]}
-        def verify(*args):
+        def verify(*args, **kwargs):
             tm._record_route_warning(task_id, "review", RuntimeError("private task prompt"))
             return review
         with patch.object(tm.ai_memory_bridge, "verify_runtime"), \

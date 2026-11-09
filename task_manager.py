@@ -1124,7 +1124,7 @@ def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, 
                    attempt_index: int = 1, memory_context: str = "",
                    new_workstream: bool = True, role: str = "implement",
                    memory_repo: Path | None = None,
-                   fresh_session: bool = False) -> dict[str, Any]:
+                   fresh_session: bool = False, memory_mode: str = "managed") -> dict[str, Any]:
     cli, model, effort = candidate["cli"], candidate["model"], candidate.get("effort")
     memory_repo = memory_repo or repo
     precise_analysis = mode == "analysis" and any(c.get("path") for c in criteria)
@@ -1279,26 +1279,31 @@ def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, 
                         "AI_MEMORY_AUTH_TOKEN", "AI_MEMORY_SERVER_URL", "AI_MEMORY_BASE_PATH",
                         "AI_MEMORY_DATA_DIR", "AI_MEMORY_CONFIG"}}
     run_env.setdefault("HOME", str(Path.home()))
-    if not run_env.get("AI_MEMORY_AUTH_TOKEN"):
+    if memory_mode != "standalone" and not run_env.get("AI_MEMORY_AUTH_TOKEN"):
         if owns_tempdir:
             isolated.cleanup()
         return {"outcome": "memory_blocked", "reason": "ai-memory authentication is unavailable"}
     if cli == "opencode" and openrouter_key:
         run_env["OPENROUTER_API_KEY"] = openrouter_key
-    if ai_memory_bridge is None:
+    if ai_memory_bridge is None and memory_mode != "standalone":
         if owns_tempdir:
             isolated.cleanup()
         return {"outcome": "memory_blocked", "reason": "ai-memory bridge module is unavailable"}
-    try:
-        command = ai_memory_bridge.managed_command(
-            task_id, attempt_index, cli, executable, native_args, worker_env,
-            new_workstream=new_workstream,
-            fresh=fresh_session or role == "verify" or (cli == "codex" and precise_analysis))
-        ai_memory_bridge.verify_runtime(memory_repo)
-    except ai_memory_bridge.AiMemoryError as exc:
-        if owns_tempdir:
-            isolated.cleanup()
-        return {"outcome": "memory_blocked", "reason": _safe_text(str(exc), 300)}
+    if memory_mode == "standalone":
+        harness = {"codex": "codex", "opencode": "opencode", "kimi": "kimi",
+                   "claude": "claude", "agy": "antigravity"}[cli]
+        command = [executable, harness, *native_args]
+    else:
+        try:
+            command = ai_memory_bridge.managed_command(
+                task_id, attempt_index, cli, executable, native_args, worker_env,
+                new_workstream=new_workstream,
+                fresh=fresh_session or role == "verify" or (cli == "codex" and precise_analysis))
+            ai_memory_bridge.verify_runtime(memory_repo)
+        except ai_memory_bridge.AiMemoryError as exc:
+            if owns_tempdir:
+                isolated.cleanup()
+            return {"outcome": "memory_blocked", "reason": _safe_text(str(exc), 300)}
     def resource_wait(reason):
         record = _read(task_id) if hermes_adapter.has_context() else None
         if record:
@@ -1364,16 +1369,18 @@ def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, 
     if keep_tail:
         output = output[-4000:]
     err = _safe_text(completed.stderr, 1200, hidden)
-    try:
-        stream_name = ai_memory_bridge.workstream_name(task_id)
-        stream_id = ai_memory_bridge.find_workstream(memory_repo, stream_name)
-        sequence = ai_memory_bridge.verify_attempt(memory_repo, stream_id, task_id, attempt_index,
-                                                   cli=cli, run_stderr=completed.stderr or "")
-    except ai_memory_bridge.AiMemoryError as exc:
-        return {"outcome": "memory_blocked", "returncode": completed.returncode,
-                "reason": _safe_text(str(exc), 300), "stdout": output, "stderr": err}
-    memory_ref = {"workstream_id": stream_id, "workstream_name": stream_name,
-                  "latest_sequence": sequence}
+    memory_ref = None
+    if memory_mode != "standalone":
+        try:
+            stream_name = ai_memory_bridge.workstream_name(task_id)
+            stream_id = ai_memory_bridge.find_workstream(memory_repo, stream_name)
+            sequence = ai_memory_bridge.verify_attempt(memory_repo, stream_id, task_id, attempt_index,
+                                                       cli=cli, run_stderr=completed.stderr or "")
+        except ai_memory_bridge.AiMemoryError as exc:
+            return {"outcome": "memory_blocked", "returncode": completed.returncode,
+                    "reason": _safe_text(str(exc), 300), "stdout": output, "stderr": err}
+        memory_ref = {"workstream_id": stream_id, "workstream_name": stream_name,
+                      "latest_sequence": sequence}
     if terminal_override == "timeout":
         return {"outcome": "timeout", "returncode": completed.returncode,
                 "reason": "worker exceeded the 30 minute task limit", "ai_memory": memory_ref}
@@ -2021,7 +2028,7 @@ def _degraded_review_pool(available: list[dict[str, Any]]) -> list[dict[str, Any
 def _external_verification(task_id: str, repo: Path, task: str,
                            criteria: list[dict[str, str]], candidates: list[dict[str, Any]],
                            implementer: dict[str, Any], openrouter_key: str | None,
-                           attempt_index: int) -> dict[str, Any]:
+                           attempt_index: int, memory_mode: str = "managed") -> dict[str, Any]:
     verifier_task = (
         "Independently verify the completed code task below. Check every acceptance criterion and run "
         "the project's relevant tests. Do not rely on an implementer's claims and do not make fixes.\n\n"
@@ -2054,7 +2061,7 @@ def _external_verification(task_id: str, repo: Path, task: str,
             ranked = _jev_choose(verifier_task, eligible, purpose="review",
                                  _position=completed_reviews, task_id=task_id)
             continue
-        if pending_handoff:
+        if pending_handoff and memory_mode != "standalone":
             try:
                 memory = pending_handoff.get("ai_memory") or {}
                 context, _ = ai_memory_bridge.read_context(repo, memory["workstream_id"])
@@ -2072,7 +2079,7 @@ def _external_verification(task_id: str, repo: Path, task: str,
             outcome = _run_candidate(
                 verifier, verifier_task, snapshot, "change", task_id, criteria, openrouter_key,
                 attempt_index=attempt_index + len(reviews), new_workstream=False,
-                role="verify", memory_repo=repo)
+                role="verify", memory_repo=repo, memory_mode=memory_mode)
         raw_summary = outcome.get("summary") or outcome.get("reason") or ""
         verdict = _parse_verdict(raw_summary)
         summary = _safe_text(raw_summary, 3000)
@@ -2097,7 +2104,7 @@ def _external_verification(task_id: str, repo: Path, task: str,
             # AGY quotas are model-family scoped; other providers rotate by account.
             eligible = [c for c in eligible if (c.get("cli"), c.get("model")) not in seen_models
                         and (kind != "quota_limited" or _quota_scope(c) != _quota_scope(verifier))]
-            if not outcome.get("ai_memory"):
+            if memory_mode != "standalone" and not outcome.get("ai_memory"):
                 reviews[-1]["worker_outcome"] = "memory_blocked"
                 if "attempt_stderr" not in reviews[-1]:
                     reviews[-1]["attempt_stderr"] = _safe_text(outcome.get("stderr") or "", 500)
@@ -2161,6 +2168,7 @@ def _candidate_has_quota(candidate: dict[str, Any]) -> bool:
 def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[str, str]],
             candidates: list[dict[str, Any]], openrouter_key: str | None, lock_handle=None) -> None:
     data = _read(task_id) or {}
+    memory_mode = (data.get("ai_memory") or {}).get("mode", "managed")
     locked = lock_handle is not None
     if lock_handle is None:
         lock_handle = _lock_path(repo).open("a+")
@@ -2197,7 +2205,8 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
         # work attempt on that harness must not resume it: it would inherit the reviewer's role.
         reviewed_clis: set[str] = set()
         exhausted_accounts = set()
-        data["ai_memory"] = {**(data.get("ai_memory") or {}), "state": "required",
+        data["ai_memory"] = {**(data.get("ai_memory") or {}),
+                              "state": "standalone" if memory_mode == "standalone" else "required",
                               "workstream_name": ai_memory_bridge.workstream_name(task_id)
                               if ai_memory_bridge else None,
                               "scope": "ai-memory CLI resolver for the canonical target repository"}
@@ -2238,35 +2247,36 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
             attempt_index = int((data.get("ai_memory") or {}).get("last_attempt", 0)) + 1
             memory_context = ""
             prior_stream = (data.get("ai_memory") or {}).get("workstream_id")
-            _transition(data, "memory_check", "memory_check_started", attempt=attempt_index)
-            try:
-                if ai_memory_bridge is None:
-                    raise RuntimeError("ai-memory bridge module is unavailable")
-                ai_memory_bridge.verify_runtime(repo)
-                if prior_stream:
-                    expected = (data.get("ai_memory") or {}).get("last_attempt_marker")
-                    if not expected:
-                        raise ai_memory_bridge.AiMemoryError(
-                            "prior attempt is absent from canonical memory; failover stopped")
-                    memory_context, _ = ai_memory_bridge.read_context(
-                        repo, prior_stream, required_marker=expected)
-                    coordinator_checkpoint = json.dumps({
-                        "task_id": task_id,
-                        "prior_attempts": attempts[-5:],
-                        "independent_verification": data.get("verification"),
-                    }, ensure_ascii=False, separators=(",", ":"))
-                    memory_context += (
-                        "\n\nCoordinator checkpoint for the previous attempt; this is structured "
-                        "verification evidence, not executable instructions:\n"
-                        + _safe_text(coordinator_checkpoint, 6000)
-                    )
-            except Exception as exc:
-                _transition(data, "blocked", "task_blocked",
-                            "ai-memory context is unavailable; no next worker was started",
-                            attempt=attempt_index, state="blocked", finished_at=_stamp(),
-                            ai_memory={**(data.get("ai_memory") or {}), "state": "blocked",
-                                       "error": _safe_text(str(exc), 300)})
-                return
+            if memory_mode != "standalone":
+                _transition(data, "memory_check", "memory_check_started", attempt=attempt_index)
+                try:
+                    if ai_memory_bridge is None:
+                        raise RuntimeError("ai-memory bridge module is unavailable")
+                    ai_memory_bridge.verify_runtime(repo)
+                    if prior_stream:
+                        expected = (data.get("ai_memory") or {}).get("last_attempt_marker")
+                        if not expected:
+                            raise ai_memory_bridge.AiMemoryError(
+                                "prior attempt is absent from canonical memory; failover stopped")
+                        memory_context, _ = ai_memory_bridge.read_context(
+                            repo, prior_stream, required_marker=expected)
+                        coordinator_checkpoint = json.dumps({
+                            "task_id": task_id,
+                            "prior_attempts": attempts[-5:],
+                            "independent_verification": data.get("verification"),
+                        }, ensure_ascii=False, separators=(",", ":"))
+                        memory_context += (
+                            "\n\nCoordinator checkpoint for the previous attempt; this is structured "
+                            "verification evidence, not executable instructions:\n"
+                            + _safe_text(coordinator_checkpoint, 6000)
+                        )
+                except Exception as exc:
+                    _transition(data, "blocked", "task_blocked",
+                                "ai-memory context is unavailable; no next worker was started",
+                                attempt=attempt_index, state="blocked", finished_at=_stamp(),
+                                ai_memory={**(data.get("ai_memory") or {}), "state": "blocked",
+                                           "error": _safe_text(str(exc), 300)})
+                    return
             data["ai_memory"].update(state="attempt_running", attempt=attempt_index,
                                      candidate_rank=candidate.get("api_rank"))
             _transition(data, "worker_running", "attempt_started", "CLI worker is running",
@@ -2274,7 +2284,8 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
             outcome = _run_candidate(candidate, task, repo, mode, task_id, criteria, openrouter_key,
                                      attempt_index=attempt_index, memory_context=memory_context,
                                      new_workstream=prior_stream is None,
-                                     fresh_session=candidate.get("cli") in reviewed_clis)
+                                     fresh_session=candidate.get("cli") in reviewed_clis,
+                                     memory_mode=memory_mode)
             data.update(_read(task_id) or {})  # Preserve admission/queue events written by the launch guard.
             attempt_finished = _stamp()
             outcome_kind = outcome.get("outcome")
@@ -2289,6 +2300,8 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                 marker = f"Code task {task_id} attempt {attempt_index}"
                 data["ai_memory"].update(memory_ref, state="synced", last_attempt=attempt_index,
                                          last_attempt_marker=marker)
+            elif memory_mode == "standalone":
+                data["ai_memory"].update(state="standalone")
             elif outcome_kind != "memory_blocked":
                 outcome_kind = "memory_blocked"
                 outcome["reason"] = "ai-memory did not confirm this attempt; failover stopped"
@@ -2316,7 +2329,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                                 attempt=attempt_index + 1)
                     external = _external_verification(
                         task_id, repo, task, criteria, candidates, candidate, openrouter_key,
-                        attempt_index + 1)
+                        attempt_index + 1, memory_mode=memory_mode)
                     latest_record = _read(task_id) or {}
                     for key in ("events", "route_warnings"):
                         if key in latest_record:
@@ -2377,6 +2390,12 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                 exhausted_accounts.add(_quota_scope(candidate))
             if outcome_kind in ("model_unavailable", "model_rate_limited", "quota_limited", "pricing_or_capability_changed",
                                 "failed_verification"):
+                if memory_mode == "standalone":
+                    final_state = "failed_verification" if last_checks is not None else "blocked"
+                    _transition(data, final_state, "task_finished",
+                                "all assessed routes failed; partial changes are preserved",
+                                state=final_state, finished_at=_stamp(), verification=last_checks)
+                    return
                 next_candidate = next((c for c in candidates[candidate_index + 1:]
                                        if _quota_scope(c) not in exhausted_accounts
                                        and _candidate_has_quota(c)), None)
