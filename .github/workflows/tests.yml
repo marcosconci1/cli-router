@@ -17,9 +17,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Allow unprivileged user namespaces (Ubuntu 24.04 AppArmor restriction)
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Probe bubblewrap sandbox
+      - name: Provide dev-host fixtures (CLI stubs and home state dirs)
         run: |
-          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-net -- true && echo BWRAP_OK || echo BWRAP_FAIL_rc=$?
-          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-net -- git -C "$GITHUB_WORKSPACE" rev-parse --show-toplevel || true
+          for c in codex claude kimi agy opencode ai-memory; do
+            printf '#!/bin/sh\nexit 0\n' | sudo tee "/usr/local/bin/$c" >/dev/null
+            sudo chmod +x "/usr/local/bin/$c"
+          done
+          mkdir -p ~/.codex ~/.kimi-code ~/.claude
       - run: uv sync --locked
       - run: uv run pytest -q
