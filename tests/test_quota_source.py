@@ -1,6 +1,8 @@
 import json
+import importlib
 import sys
 import tempfile
+import types
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,6 +18,76 @@ class QuotaSourceTests(unittest.TestCase):
         path = Path(root) / "quota_cache.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
+
+    def test_optional_rarf_plugin_ignores_foreign_quota_cache_module(self):
+        package_name = "_hermes_code_quota_plugin"
+        foreign_name = "hermes_core_quota_cache"
+        saved_modules = {name: module for name, module in sys.modules.items()
+                         if name == package_name or name.startswith(package_name + ".")}
+        saved_foreign = sys.modules.get(foreign_name)
+        for name in saved_modules:
+            del sys.modules[name]
+        foreign = types.ModuleType(foreign_name)
+        foreign.read_quota_cache = lambda: None
+        foreign.quota_cache_age_seconds = lambda: None
+        foreign.refresh_quota_cache = lambda: None
+        sys.modules[foreign_name] = foreign
+
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                plugin = Path(temp) / "plugins" / "hermes-quota-plugin"
+                plugin.mkdir(parents=True)
+                (plugin / "__init__.py").write_text("from . import quota_cache\n", encoding="utf-8")
+                (plugin / "quota_cache.py").write_text(
+                    "def read_quota_cache(): pass\n"
+                    "def quota_cache_age_seconds(): pass\n"
+                    "def refresh_quota_cache(): pass\n",
+                    encoding="utf-8",
+                )
+
+                module = quota._optional_rarf_plugin(Path(temp))
+
+                self.assertIsNotNone(module)
+                self.assertIn(package_name, sys.modules)
+                self.assertIs(importlib.import_module(f"{package_name}.quota_cache"), module)
+        finally:
+            sys.modules.pop(f"{package_name}.quota_cache", None)
+            sys.modules.pop(package_name, None)
+            sys.modules.pop(foreign_name, None)
+            sys.modules.update(saved_modules)
+            if saved_foreign is not None:
+                sys.modules[foreign_name] = saved_foreign
+
+    def test_optional_rarf_plugin_uses_pre_registered_profile_cache(self):
+        package_name = "_hermes_code_quota_plugin"
+        saved_modules = {name: module for name, module in sys.modules.items()
+                         if name == package_name or name.startswith(package_name + ".")}
+        for name in saved_modules:
+            del sys.modules[name]
+
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                plugin = Path(temp) / "plugins" / "hermes-quota-plugin"
+                plugin.mkdir(parents=True)
+                (plugin / "__init__.py").write_text("", encoding="utf-8")
+                package = types.ModuleType(package_name)
+                package.__path__ = [str(plugin)]
+                cache = types.ModuleType(f"{package_name}.quota_cache")
+                cache.__file__ = str(plugin / "quota_cache.py")
+                cache.read_quota_cache = lambda: None
+                cache.quota_cache_age_seconds = lambda: None
+                cache.refresh_quota_cache = lambda: None
+                sys.modules[package_name] = package
+                sys.modules[f"{package_name}.quota_cache"] = cache
+
+                with patch.object(quota.importlib.util, "spec_from_file_location",
+                                  side_effect=AssertionError("pre-registered cache was reloaded")):
+                    self.assertIs(quota._optional_rarf_plugin(Path(temp)), cache)
+                self.assertIs(sys.modules[package_name], package)
+        finally:
+            sys.modules.pop(f"{package_name}.quota_cache", None)
+            sys.modules.pop(package_name, None)
+            sys.modules.update(saved_modules)
 
     def test_reads_cache_file(self):
         with tempfile.TemporaryDirectory() as temp:

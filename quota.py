@@ -54,13 +54,20 @@ def _hermes_home() -> Path:
 
 
 def _optional_rarf_plugin(home: Path | None = None) -> Any | None:
-    for name, module in tuple(sys.modules.items()):
-        if name.endswith("quota_cache") and all(hasattr(module, attr) for attr in
-                ("read_quota_cache", "quota_cache_age_seconds", "refresh_quota_cache")):
-            return module
     plugin = (home or _hermes_home()) / "plugins" / "hermes-quota-plugin"
     if not (plugin / "__init__.py").is_file():
         return None
+    plugin = plugin.resolve()
+    for name, module in tuple(sys.modules.items()):
+        if name.endswith("quota_cache") and all(hasattr(module, attr) for attr in
+                ("read_quota_cache", "quota_cache_age_seconds", "refresh_quota_cache")):
+            module_file = getattr(module, "__file__", None)
+            if module_file is not None:
+                try:
+                    if Path(module_file).resolve().is_relative_to(plugin):
+                        return module
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    pass
     package_name = "_hermes_code_quota_plugin"
     package = sys.modules.get(package_name)
     if package is None:
