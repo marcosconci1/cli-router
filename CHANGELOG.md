@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 - Add a local diagnostic journal (`runtime/cli-tasks/events.log.jsonl`, 30 days / 1 MB retention) and a `diagnose` action that writes a redacted bundle for bug reports. No telemetry and no network calls.
+- Route creative tasks using Design Arena ELO evidence in the benchmark index and profiles, with a per-model routing toggle.
+- Make ai-memory integration optional with `enabled`, `disabled`, and `auto` modes; standalone mode runs workers and reviewers without managed memory.
 
 ## 0.4.1
 
