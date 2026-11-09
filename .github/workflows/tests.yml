@@ -20,8 +20,8 @@ jobs:
       - name: Provide dev-host fixtures (CLI stubs and home state dirs)
         run: |
           for c in codex claude kimi agy opencode ai-memory; do
-            printf '#!/bin/sh\nexit 0\n' | sudo tee "/usr/local/bin/$c" >/dev/null
-            sudo chmod +x "/usr/local/bin/$c"
+            printf '#!/bin/sh\nexit 0\n' | sudo tee "/usr/bin/$c" >/dev/null
+            sudo chmod +x "/usr/bin/$c"
           done
           mkdir -p ~/.codex ~/.kimi-code ~/.claude
       - run: uv sync --locked
