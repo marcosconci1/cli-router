@@ -83,6 +83,22 @@ def _root() -> Path:
     return hermes_adapter.hermes_home(Path(__file__).resolve().parent)
 
 
+def _ai_memory_mode() -> str:
+    """Return the configured ai-memory policy, defaulting to optional auto mode."""
+    if not hermes_adapter.has_context():
+        return "auto"
+    try:
+        cfg = hermes_adapter.get_config("cli-router", {})
+    except Exception:
+        return "auto"
+    if not isinstance(cfg, dict):
+        return "auto"
+    value = cfg.get("ai-memory")
+    if value is None and isinstance(cfg.get("settings"), dict):
+        value = cfg["settings"].get("ai-memory")
+    return value if isinstance(value, str) and value in {"enabled", "disabled", "auto"} else "auto"
+
+
 def _task_dir() -> Path:
     p = _root() / "runtime" / "cli-tasks"
     p.mkdir(parents=True, exist_ok=True)
@@ -2181,7 +2197,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
         # work attempt on that harness must not resume it: it would inherit the reviewer's role.
         reviewed_clis: set[str] = set()
         exhausted_accounts = set()
-        data["ai_memory"] = {"state": "required",
+        data["ai_memory"] = {**(data.get("ai_memory") or {}), "state": "required",
                               "workstream_name": ai_memory_bridge.workstream_name(task_id)
                               if ai_memory_bridge else None,
                               "scope": "ai-memory CLI resolver for the canonical target repository"}
@@ -2654,19 +2670,41 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         if mode == "change":
             _recover_orphaned_tasks(repo)
         _transition(data, "memory_check", "task_submitted", "checking the ai-memory prerequisite")
+        configured_memory_mode = _ai_memory_mode()
+        route_warnings = []
+        data["route_warnings"] = route_warnings
+        if configured_memory_mode == "disabled":
+            memory_mode = "standalone"
+        elif configured_memory_mode == "enabled":
+            memory_mode = "managed"
+            data["ai_memory"] = {"mode": memory_mode}
+            if ai_memory_bridge is None:
+                raise RuntimeError("ai-memory bridge module is unavailable")
+            ai_memory_bridge.verify_runtime(repo)
+        else:
+            try:
+                if ai_memory_bridge is None:
+                    raise RuntimeError("ai-memory bridge module is unavailable")
+                ai_memory_bridge.verify_runtime(repo)
+                memory_mode = "managed"
+            except Exception:
+                memory_mode = "standalone"
+                route_warnings.append(
+                    "ai-memory unavailable; running standalone (single attempt, no handoff memory)")
+        data["ai_memory"] = {"mode": memory_mode}
+        if memory_mode == "standalone":
+            _transition(data, "memory_check", "ai_memory_mode", "running without managed ai-memory",
+                        ai_memory=data["ai_memory"])
+            data["events"][-1]["mode"] = memory_mode
+            _write(task_id, data)
         # Confirm the portable handoff service before quota refresh or Jev
         # evaluation; an outage must not trigger paid routing work.
-        if ai_memory_bridge is None:
-            raise RuntimeError("ai-memory bridge module is unavailable")
-        ai_memory_bridge.verify_runtime(repo)
         _transition(data, "quota_check", "quota_check_started", "checking subscription quota")
         quota = _quota(refresh=False)
         if not quota["fresh"]:
             quota = _quota(refresh=True)
         subscription_candidates = _worker_capable(_subscriptions(quota, _installed_models()))
         subscription_candidates = _filter_candidates_by_toggle(subscription_candidates, task_id=task_id, in_memory_data=data)
-        route_warnings = []
-        data["route_warnings"] = route_warnings
         if pin_cli or pin_model:
             pinned, unmatched = [], sorted({f"{c.get('cli')}/{c.get('model')}" for c in subscription_candidates})
             for c in subscription_candidates:

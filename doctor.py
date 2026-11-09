@@ -106,12 +106,33 @@ def _check_cli(name: str) -> dict[str, str]:
 
 
 def _check_ai_memory() -> dict[str, str]:
+    mode = "auto"
+    if hermes_adapter.has_context():
+        try:
+            cfg = hermes_adapter.get_config("cli-router", {})
+            if isinstance(cfg, dict):
+                configured = cfg.get("ai-memory")
+                if configured is None and isinstance(cfg.get("settings"), dict):
+                    configured = cfg["settings"].get("ai-memory")
+                if isinstance(configured, str) and configured in {"enabled", "disabled", "auto"}:
+                    mode = configured
+        except Exception:
+            pass
+    if mode == "disabled":
+        return {"name": "ai-memory", "status": "skip",
+                "hint": "ai-memory integration disabled by configuration"}
     # Use submit's authenticated version/server probe, not configuration text.
     try:
         ai_memory_bridge.verify_runtime(Path.cwd())
     except ai_memory_bridge.AiMemoryError as exc:
+        if mode == "auto":
+            return {"name": "ai-memory", "status": "skip",
+                    "hint": "ai-memory optional; router will run standalone (managed memory unavailable)"}
         return {"name": "ai-memory", "status": "fail", "hint": str(exc)}
     except Exception as exc:
+        if mode == "auto":
+            return {"name": "ai-memory", "status": "skip",
+                    "hint": "ai-memory optional; router will run standalone (managed memory unavailable)"}
         return {"name": "ai-memory", "status": "fail",
                 "hint": f"ai-memory runtime check failed ({type(exc).__name__})"}
     return {"name": "ai-memory", "status": "ok",

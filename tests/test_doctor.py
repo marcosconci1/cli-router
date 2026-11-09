@@ -75,6 +75,8 @@ class DoctorTests(unittest.TestCase):
         ]
         for returncode, stdout, expected in cases:
             with self.subTest(stdout=stdout, returncode=returncode), \
+                 patch.object(doctor.hermes_adapter, "has_context", return_value=True), \
+                 patch.object(doctor.hermes_adapter, "get_config", return_value={"ai-memory": "enabled"}), \
                  patch.object(doctor.ai_memory_bridge, "_parent_env", return_value={"AI_MEMORY_AUTH_TOKEN": "synthetic"}), \
                  patch.object(doctor.shutil, "which", return_value="/usr/bin/ai-memory"), \
                  patch.object(doctor.subprocess, "run", side_effect=[
@@ -84,13 +86,19 @@ class DoctorTests(unittest.TestCase):
                 self.assertEqual(doctor._check_ai_memory()["status"], expected)
 
     def test_ai_memory_missing_auth_timeout_and_failure_are_blockers(self):
-        with patch.object(doctor.shutil, "which", return_value=None):
+        with patch.object(doctor.hermes_adapter, "has_context", return_value=True), \
+             patch.object(doctor.hermes_adapter, "get_config", return_value={"ai-memory": "enabled"}), \
+             patch.object(doctor.shutil, "which", return_value=None):
             self.assertEqual(doctor._check_ai_memory()["status"], "fail")
         with patch.object(doctor.shutil, "which", return_value="/usr/bin/ai-memory"), \
+             patch.object(doctor.hermes_adapter, "has_context", return_value=True), \
+             patch.object(doctor.hermes_adapter, "get_config", return_value={"ai-memory": "enabled"}), \
              patch.dict(os.environ, {}, clear=True):
             self.assertEqual(doctor._check_ai_memory()["status"], "fail")
         for error in (subprocess.TimeoutExpired("ai-memory", 10), OSError("private-secret")):
             with self.subTest(error=type(error).__name__), \
+                 patch.object(doctor.hermes_adapter, "has_context", return_value=True), \
+                 patch.object(doctor.hermes_adapter, "get_config", return_value={"ai-memory": "enabled"}), \
                  patch.object(doctor.shutil, "which", return_value="/usr/bin/ai-memory"), \
                  patch.object(doctor.ai_memory_bridge, "_parent_env", return_value={"AI_MEMORY_AUTH_TOKEN": "synthetic"}), \
                  patch.object(doctor.subprocess, "run", side_effect=error):

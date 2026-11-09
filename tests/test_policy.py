@@ -1089,7 +1089,8 @@ class PolicyTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
             old_root = tm._root; tm._root = lambda: root / "state"
             try:
-                with patch.object(tm.ai_memory_bridge, "verify_runtime",
+                with patch.object(tm, "_ai_memory_mode", return_value="enabled"), \
+                     patch.object(tm.ai_memory_bridge, "verify_runtime",
                                   side_effect=tm.ai_memory_bridge.AiMemoryError("ai-memory server unavailable")), \
                      patch.object(tm, "_quota", side_effect=AssertionError("quota ran during memory outage")), \
                      patch.object(tm, "_jev_choose", side_effect=AssertionError("Jev ran during memory outage")):
@@ -1100,6 +1101,7 @@ class PolicyTests(unittest.TestCase):
                 self.assertIn("ai-memory prerequisite failed", result["message"])
             finally:
                 tm._root = old_root
+
 
     def test_openrouter_credential_reader_uses_only_openrouter_entry(self):
         import tempfile
