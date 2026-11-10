@@ -8,7 +8,7 @@ A task moves through four stages. Each stage is a plain Python object, and the w
 
 1. **Route picking.** The router reads the quota cache, applies the 20% reserve, and ranks the remaining candidates. Ranking is deterministic by default: a public benchmark score, with cost as tiebreak.
 2. **Execution.** The chosen CLI runs under sandbox controls with its own memory limit. Most attempts use bubblewrap; Codex implementation attempts use its native sandbox. The worker edits the repository and commits on the current branch.
-3. **Review.** Two distinct models in fresh contexts and separate disposable snapshots review the change independently. Both must pass. A failed review reopens the task with the reviewers' required changes, and the pipeline returns to stage 1.
+3. **Review.** Two distinct models in fresh contexts and separate disposable snapshots review the change independently by default. Both must pass. The review is configurable: `independent-review: false` in `cli-router.yaml` skips the model reviews, keeps the local acceptance checks and records the review as skipped. A failed review reopens the task with the reviewers' required changes, and the pipeline returns to stage 1.
 4. **Record.** Every attempt, verdict, and quota reading lands in a task record under `runtime/cli-tasks/<task_id>.json`. Nothing lives only in memory.
 
 ## Design decisions

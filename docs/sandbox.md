@@ -33,4 +33,4 @@ These controls permit commits while protecting the checkout's hooks and branch p
 
 ## The review gate
 
-A commit alone does not finish a task. Two distinct models in fresh contexts and separate disposable snapshots review the change independently. Both must pass. Reviewers may share a provider, and the implementer's model remains eligible in a fresh context. A failed review sends the task back with the reviewers' required changes, and the router picks a route again.
+A commit alone does not finish a task. Two distinct models in fresh contexts and separate disposable snapshots review the change independently by default. Both must pass. The review can be switched off in `cli-router.yaml`; see [Configuration](configuration.md). Reviewers may share a provider, and the implementer's model remains eligible in a fresh context. A failed review sends the task back with the reviewers' required changes, and the router picks a route again.
