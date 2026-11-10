@@ -15,5 +15,5 @@ cli-router makes the switch automatic and, by default, the review mandatory. It 
 ## What this system refuses to do
 
 * No worker outside the sandbox
-* No change counted as done without two passing reviews
+* By default, no change counted as done without two passing reviews (a skipped review is recorded as skipped)
 * No task data sent beyond the configured provider CLIs, Jev, and ai-memory
