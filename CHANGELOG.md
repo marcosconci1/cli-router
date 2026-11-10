@@ -2,6 +2,7 @@
 
 ## 0.6.0
 
+- The OpenRouter free fallback is now opt-in (providers.opencode.enabled: true), so default installs no longer fetch the catalog or warn on every task.
 - Add a `cli-router.yaml` config file in the Hermes home for providers, model exclusions, Jev, ai-memory, review and worker limits.
 - Independent review can be switched off, and a skipped review is recorded as skipped, never as passed.
 - A bounded worker pool replaces the single host-wide slot, so different repositories run side by side; the default is 2 workers and same-repository changes stay exclusive.
