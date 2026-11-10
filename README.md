@@ -33,8 +33,8 @@ flowchart LR
 
 * Reads real usage windows from each provider, keeps a 20% reserve when usage is known, and never picks a route that is about to hit its limit.
 * Ranks candidates by a public coding benchmark index. No extra service needed.
-* Ranking works without Jev. The Jev decision plugin can rank with a live LLM call and is required for retry handoff: if a failed attempt needs another worker, missing or unavailable Jev blocks the task.
-* Before a change counts as done, two distinct models in fresh contexts and separate disposable snapshots must review it. A failure sends the task back with the reviewers' required changes.
+* Ranking works without Jev. Jev can rank with a live LLM call; when enabled it assesses retry handoffs. A per-install config can disable Jev and use deterministic ranking and progress-based retry continuation.
+* By default, two distinct models in fresh contexts and separate disposable snapshots review a change before it counts as done. A per-install config can skip model reviews while keeping local acceptance checks.
 
 ## Quick start
 
@@ -83,6 +83,14 @@ list of installed options.
 Set `ai-memory: enabled | disabled | auto` in the `cli-router` settings in your Hermes profile. The default is `auto`: cli-router uses managed ai-memory when it is available and runs standalone when it is not. `enabled` requires managed ai-memory; `disabled` always runs standalone.
 
 Standalone runs invoke the CLI directly and reviews run without ledger confirmation. Standalone mode has no cross-attempt handoff memory and allows only one worker attempt per task.
+
+## Per-install configuration
+
+Copy `cli-router.example.yaml` from the installed plugin directory to `cli-router.yaml` beside
+`task_manager.py`. The user file is preserved by updates and overrides only the settings it
+contains. It can control providers and exact per-CLI model exclusions, Jev, ai-memory, and
+independent review. See [the install guide](docs/install.md#per-install-cli-router-settings) for
+precedence, setup, and supported YAML syntax.
 
 ## Documentation
 

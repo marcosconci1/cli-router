@@ -83,8 +83,141 @@ def _root() -> Path:
     return hermes_adapter.hermes_home(Path(__file__).resolve().parent)
 
 
+class ConfigurationError(ValueError):
+    """A present cli-router.yaml file is invalid and must not be ignored."""
+
+
+def _plugin_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _yaml_scalar(value: str, path: Path, line: int) -> Any:
+    value = value.strip()
+    if value in {"true", "false"}:
+        return value == "true"
+    if value in {"null", "~"}:
+        return None
+    if value.startswith("["):
+        if not value.endswith("]"):
+            raise ConfigurationError(f"{path}: line {line}: malformed inline list")
+        body = value[1:-1].strip()
+        if not body:
+            return []
+        return [_yaml_scalar(part, path, line) for part in body.split(",")]
+    if value.startswith(('"', "'")):
+        quote = value[0]
+        if len(value) < 2 or value[-1] != quote:
+            raise ConfigurationError(f"{path}: line {line}: unterminated quoted value")
+        if quote == '"':
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ConfigurationError(f"{path}: line {line}: invalid quoted value") from exc
+        return value[1:-1].replace("''", "'")
+    return value
+
+
+def _parse_config_yaml(text: str, path: Path) -> dict[str, Any]:
+    """Parse the deliberately small, safe YAML subset used by cli-router config."""
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, Any]] = [(-1, root)]
+    for line_no, raw in enumerate(text.splitlines(), 1):
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        if "\t" in raw[:len(raw) - len(raw.lstrip())]:
+            raise ConfigurationError(f"{path}: line {line_no}: tabs cannot indent YAML")
+        indent = len(raw) - len(raw.lstrip(" "))
+        content = raw[indent:].strip()
+        if " #" in content:
+            content = content.split(" #", 1)[0].rstrip()
+        while len(stack) > 1 and indent <= stack[-1][0]:
+            stack.pop()
+        parent = stack[-1][1]
+        if content.startswith("- "):
+            if not isinstance(parent, list):
+                raise ConfigurationError(f"{path}: line {line_no}: unexpected sequence item")
+            parent.append(_yaml_scalar(content[2:], path, line_no))
+            continue
+        if ":" not in content or not isinstance(parent, dict):
+            raise ConfigurationError(f"{path}: line {line_no}: expected a mapping entry")
+        key, raw_value = content.split(":", 1)
+        key = key.strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", key):
+            raise ConfigurationError(f"{path}: line {line_no}: invalid key")
+        if key in parent:
+            raise ConfigurationError(f"{path}: line {line_no}: duplicate key {key!r}")
+        raw_value = raw_value.strip()
+        if not raw_value:
+            # The following indented block may be a sequence or a mapping.
+            next_nonempty = next((candidate for candidate in text.splitlines()[line_no:]
+                                  if candidate.strip() and not candidate.lstrip().startswith("#")), None)
+            next_indent = (len(next_nonempty) - len(next_nonempty.lstrip(" "))
+                           if next_nonempty is not None else -1)
+            if next_nonempty is None or next_indent <= indent:
+                value: Any = None
+            else:
+                value = [] if next_nonempty.lstrip().startswith("- ") else {}
+            parent[key] = value
+            if isinstance(value, (dict, list)):
+                stack.append((indent, value))
+        else:
+            parent[key] = _yaml_scalar(raw_value, path, line_no)
+    return root
+
+
+def _validate_modular_config(payload: Any, path: Path) -> dict[str, Any]:
+    if not isinstance(payload, dict) or set(payload) != {"cli-router"}:
+        raise ConfigurationError(f"{path}: expected only the top-level 'cli-router' mapping")
+    cfg = payload["cli-router"]
+    if cfg is None:
+        cfg = {}
+    allowed = {"providers", "jev", "ai-memory", "independent-review"}
+    if not isinstance(cfg, dict) or set(cfg) - allowed:
+        raise ConfigurationError(f"{path}: cli-router must be a mapping with supported settings")
+    providers = cfg.get("providers", {})
+    if providers is None:
+        providers = {}
+    if not isinstance(providers, dict):
+        raise ConfigurationError(f"{path}: providers must be a mapping")
+    for cli, settings in providers.items():
+        if settings is None:
+            settings = {}
+            providers[cli] = settings
+        if not isinstance(settings, dict) or set(settings) - {"enabled", "excluded_models"}:
+            raise ConfigurationError(f"{path}: providers.{cli} must contain enabled and/or excluded_models")
+        if "enabled" in settings and not isinstance(settings["enabled"], bool):
+            raise ConfigurationError(f"{path}: providers.{cli}.enabled must be true or false")
+        models = settings.get("excluded_models", [])
+        if models is None:
+            settings["excluded_models"] = []
+            models = []
+        if not isinstance(models, list) or any(not isinstance(model, str) or not model for model in models):
+            raise ConfigurationError(f"{path}: providers.{cli}.excluded_models must be a list of model IDs")
+    for key in ("jev", "independent-review"):
+        if key in cfg and not isinstance(cfg[key], bool):
+            raise ConfigurationError(f"{path}: {key} must be true or false")
+    if "ai-memory" in cfg and (not isinstance(cfg["ai-memory"], str)
+                                or cfg["ai-memory"] not in {"enabled", "disabled", "auto"}):
+        raise ConfigurationError(f"{path}: ai-memory must be enabled, disabled, or auto")
+    return cfg
+
+
+def _load_modular_config() -> dict[str, Any]:
+    path = _plugin_dir() / "cli-router.yaml"
+    if not path.exists():
+        return {}
+    try:
+        payload = _parse_config_yaml(path.read_text(encoding="utf-8"), path)
+    except (OSError, UnicodeError) as exc:
+        raise ConfigurationError(f"{path}: could not read config") from exc
+    return _validate_modular_config(payload, path)
+
+
 def _ai_memory_mode() -> str:
     """Return the configured ai-memory policy, defaulting to optional auto mode."""
+    modular = _load_modular_config()
+    if "ai-memory" in modular:
+        return modular["ai-memory"]
     if not hermes_adapter.has_context():
         return "auto"
     try:
@@ -726,34 +859,46 @@ def _profiled(candidate: dict[str, Any], index: dict[str, Any],
 
 
 def _provider_toggles() -> dict[str, bool]:
-    """Read provider toggles from configuration. Fail-open on missing or malformed shape."""
-    if not hermes_adapter.has_context():
-        return {}
-    try:
-        raw = hermes_adapter.get_config("routing.providers", None)
-        if raw is None:
-            raw = hermes_adapter.get_config("cli-router", {})
-        if isinstance(raw, dict) and any(key in raw for key in ("routing.providers", "routing", "settings")):
-            cfg = raw
-            raw = cfg.get("routing.providers")
-            if raw is None and isinstance(cfg.get("routing"), dict):
-                raw = cfg["routing"].get("providers")
-            if raw is None and isinstance(cfg.get("settings"), dict):
-                settings = cfg["settings"]
-                raw = settings.get("routing.providers")
-                if raw is None and isinstance(settings.get("routing"), dict):
-                    raw = settings["routing"].get("providers")
-    except Exception:
-        return {}
-    if not isinstance(raw, dict):
-        return {}
+    """Read provider toggles, with the per-install YAML values taking precedence."""
+    modular = _load_modular_config()
     toggles: dict[str, bool] = {}
-    for k, v in raw.items():
-        if isinstance(k, str) and isinstance(v, bool):
-            toggles[k] = v
-        else:
-            return {}
+    if hermes_adapter.has_context():
+        try:
+            raw = hermes_adapter.get_config("routing.providers", None)
+            if raw is None:
+                raw = hermes_adapter.get_config("cli-router", {})
+            if isinstance(raw, dict) and any(key in raw for key in ("routing.providers", "routing", "settings")):
+                cfg = raw
+                raw = cfg.get("routing.providers")
+                if raw is None and isinstance(cfg.get("routing"), dict):
+                    raw = cfg["routing"].get("providers")
+                if raw is None and isinstance(cfg.get("settings"), dict):
+                    settings = cfg["settings"]
+                    raw = settings.get("routing.providers")
+                    if raw is None and isinstance(settings.get("routing"), dict):
+                        raw = settings["routing"].get("providers")
+            if isinstance(raw, dict) and all(isinstance(k, str) and isinstance(v, bool)
+                                             for k, v in raw.items()):
+                toggles.update(raw)
+        except Exception:
+            pass
+    for cli, settings in modular.get("providers", {}).items():
+        if "enabled" in settings:
+            toggles[cli] = settings["enabled"]
     return toggles
+
+
+def _excluded_models() -> dict[str, set[str]]:
+    return {cli: set(settings.get("excluded_models", []))
+            for cli, settings in _load_modular_config().get("providers", {}).items()}
+
+
+def _jev_enabled() -> bool:
+    return _load_modular_config().get("jev", True)
+
+
+def _independent_review_enabled() -> bool:
+    return _load_modular_config().get("independent-review", True)
 
 
 def _model_toggles() -> dict[str, bool]:
@@ -789,10 +934,10 @@ def _model_toggles() -> dict[str, bool]:
 
 def _filter_candidates_by_model_toggle(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     toggles = _model_toggles()
-    if not toggles:
-        return candidates
+    excluded = _excluded_models()
     return [candidate for candidate in candidates
-            if toggles.get(str(candidate.get("model") or ""), True)]
+            if toggles.get(str(candidate.get("model") or ""), True)
+            and str(candidate.get("model") or "") not in excluded.get(str(candidate.get("cli") or ""), set())]
 
 
 def _record_provider_toggle(task_id: str | None, hidden_clis: list[str],
@@ -863,6 +1008,25 @@ def _record_route_warning(task_id: str | None, purpose: str, error: Exception,
     _write(task_id, data)
 
 
+def _record_jev_disabled(task_id: str | None, action: str,
+                         in_memory_data: dict[str, Any] | None = None) -> None:
+    if not task_id or not re.fullmatch(r"[0-9a-f]{32}", task_id):
+        return
+    data = in_memory_data if in_memory_data is not None else _read(task_id)
+    if not data:
+        return
+    message = f"Jev disabled by cli-router.yaml; deterministic {action} used"
+    events = data.get("events") if isinstance(data.get("events"), list) else []
+    if not any(e.get("message") == message for e in events if isinstance(e, dict)):
+        events.append({"at": _stamp(), "event": "jev_disabled", "message": message})
+    data["events"] = events[-MAX_TASK_EVENTS:]
+    warnings = data.get("route_warnings") if isinstance(data.get("route_warnings"), list) else []
+    if message not in warnings:
+        warnings.append(message)
+    data["route_warnings"] = warnings
+    _write(task_id, data)
+
+
 def _jev_run(service, request: dict[str, Any], failure: str) -> dict[str, Any]:
     for _ in range(2):
         result = service.run(request)
@@ -903,6 +1067,18 @@ def _jev_choose(task: str, candidates: list[dict[str, Any]], *, one_at_a_time: b
     candidates = _filter_candidates_by_model_toggle(candidates)
     if not candidates:
         return []
+    if not _jev_enabled():
+        _record_jev_disabled(task_id, "benchmark ranking", in_memory_data)
+        ranked = _fallback_rank(candidates, _benchmark_index(), task)
+        if purpose == "review":
+            seen, unique = set(), []
+            for candidate in ranked:
+                ident = (candidate.get("cli"), candidate.get("model"))
+                if ident not in seen:
+                    seen.add(ident)
+                    unique.append(candidate)
+            ranked = unique
+        return ranked
     try:
         return _jev_choose_pinned(task, candidates, one_at_a_time=one_at_a_time, purpose=purpose,
                                   _position=_position, task_id=task_id, in_memory_data=in_memory_data)
@@ -1001,6 +1177,10 @@ def _jev_handoff(task: str, previous_attempt: dict[str, Any], verification: dict
                  next_candidate: dict[str, Any], memory_context: str,
                  task_id: str | None = None) -> bool:
     """Ask pinned Jev whether this exact assessed route can resume this baton."""
+    if not _jev_enabled():
+        _record_jev_disabled(task_id, "handoff continuation")
+        return (bool(previous_attempt.get("changed_files"))
+                or bool((verification or {}).get("changed_files")))
     service = hermes_adapter.jev_service()
     connection = hermes_adapter.get_config("connection", {})
     if connection.get("backend") != "openrouter" or connection.get("model") != "typesafe/jev-1.14":
@@ -2330,7 +2510,17 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                           and last_checks["head_unchanged"])
                          or (mode == "change" and bool(last_checks["changed_files"])))
                 )
-                if local_checks_passed:
+                if local_checks_passed and not _independent_review_enabled():
+                    skip = {"skipped": True,
+                            "summary": "independent review skipped by cli-router configuration",
+                            "reviews": []}
+                    last_checks["external"] = skip
+                    last_checks["review_skipped"] = True
+                    last_checks["independent_checks_passed"] = True
+                    _transition(data, "verifying", "independent_review_skipped",
+                                "acceptance checks passed; independent review skipped by configuration",
+                                attempt=attempt_index)
+                elif local_checks_passed:
                     _transition(data, "external_verifying", "external_verification_started",
                                 attempt=attempt_index + 1)
                     external = _external_verification(
@@ -2358,6 +2548,16 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                         external_unreviewed = not external_failed
                 else:
                     last_checks["independent_checks_passed"] = False
+                    if not _independent_review_enabled():
+                        last_checks["external"] = {
+                            "skipped": True,
+                            "summary": "independent review skipped by configuration; local acceptance checks failed",
+                            "reviews": [],
+                        }
+                        last_checks["review_skipped"] = True
+                        _transition(data, "verifying", "independent_review_skipped",
+                                    "independent review skipped by configuration; local acceptance checks failed",
+                                    attempt=attempt_index)
                 if last_checks["independent_checks_passed"]:
                     outcome_kind = "verified"
                 else:
@@ -2472,7 +2672,10 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                 return
             if outcome_kind == "verified":
                 done = outcome
-                _transition(data, "completed", "task_completed", "independent checks passed",
+                completion_message = ("acceptance checks passed; independent review skipped by configuration"
+                                      if last_checks and last_checks.get("review_skipped") else
+                                      "independent checks passed")
+                _transition(data, "completed", "task_completed", completion_message,
                             attempt=attempt_index, state="completed", finished_at=_stamp(),
                             summary=_safe_text(outcome.get("summary", ""), 3000), verification=last_checks)
                 return
@@ -2788,7 +2991,9 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         openrouter_key = None if (pin_cli or pin_model) else locals().get("openrouter_key")
     except Exception as exc:
         repo_lock.close()
-        message = ("ai-memory prerequisite failed; no route was assessed"
+        message = (f"cli-router configuration invalid: {_safe_text(str(exc), 250)}"
+                   if isinstance(exc, ConfigurationError) else
+                   "ai-memory prerequisite failed; no route was assessed"
                    if "ai-memory" in str(exc).lower() else
                    "OpenRouter catalog blocker: incomplete or invalid catalog"
                    if "catalog" in str(exc).lower() else

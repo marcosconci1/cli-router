@@ -1,5 +1,6 @@
 # Runtime state
 runtime/
+cli-router.yaml
 quota_cache.json
 cli_router_quota.json
 model-cooldowns.json

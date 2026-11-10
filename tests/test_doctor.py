@@ -145,6 +145,21 @@ class DoctorTests(unittest.TestCase):
             self.assertEqual(res["status"], "warn")
             self.assertIn("deterministic fallback ranking in use", res["hint"])
 
+    def test_modular_config_controls_doctor_memory_and_jev_diagnostics(self):
+        with patch.object(doctor, "_modular_config", return_value={"ai-memory": "disabled", "jev": False}), \
+             patch.object(doctor.ai_memory_bridge, "verify_runtime",
+                          side_effect=AssertionError("disabled ai-memory probed")), \
+             patch.object(hermes_adapter, "_CONTEXT", MagicMock()):
+            memory = doctor._check_ai_memory()
+            jev = doctor._check_jev_connection()
+        self.assertEqual(memory["status"], "skip")
+        self.assertIn("disabled", memory["hint"])
+        self.assertEqual(jev["status"], "skip")
+        self.assertIn("deterministic ranking and handoff", jev["hint"])
+
+        with patch.object(doctor, "_modular_config", side_effect=ValueError("bad config")):
+            self.assertEqual(doctor._check_jev_connection()["status"], "fail")
+
     def test_plugin_wiring_check(self):
         fixtures = {
             "both present": (

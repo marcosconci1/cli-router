@@ -45,6 +45,45 @@ Then restart the gateway and open a fresh session. A running session never picks
 
 When `connection.backend` is `openrouter`, set `OPENROUTER_API_KEY` in this profile's `.env`. Jev reads that key to select routes; without it, the router falls back to deterministic ranking.
 
+## Per-install cli-router settings
+
+For settings that should travel with the plugin installation instead of the Hermes profile, copy
+`<plugin-dir>/cli-router.example.yaml` to `<plugin-dir>/cli-router.yaml` and edit the copy. The
+plugin directory is typically `~/.hermes/profiles/<profile>/plugins/cli-router`. The updater
+preserves `cli-router.yaml`; it is gitignored in this repository. Restart the gateway after edits.
+
+```sh
+cp <plugin-dir>/cli-router.example.yaml <plugin-dir>/cli-router.yaml
+```
+
+```yaml
+cli-router:
+  providers:
+    codex:
+      enabled: true
+      excluded_models: [model-id]
+  jev: false
+  ai-memory: disabled
+  independent-review: true
+```
+
+The file's explicitly set provider `enabled`, `jev`, `ai-memory`, and `independent-review` values
+override their Hermes equivalents. Omitted values retain Hermes settings and existing defaults.
+Provider model exclusions are exact model IDs scoped to that CLI, and empty or omitted lists exclude
+nothing. They apply to normal routing, independent reviews, and routes pinned with `cli` or `model`.
+The legacy Hermes `routing.providers`, `routing.models`, and `cli-router.settings.ai-memory` settings
+continue to work when the corresponding new setting is absent.
+
+`jev: false` uses deterministic benchmark ranking and progress-based retry continuation without
+calling Jev, including during handoff; task warnings record that behavior. `independent-review: false`
+keeps local acceptance checks and records the independent review as skipped. It does not record a
+review pass. `ai-memory: disabled` runs standalone even if ai-memory is unavailable; `auto` remains
+the default and selects standalone mode when managed ai-memory is unavailable.
+
+The config accepts ordinary indented mappings, booleans, quoted strings, and simple model ID lists.
+It rejects unknown keys and malformed values with the config path and reason; YAML anchors, block
+scalars, and other advanced YAML features are not supported.
+
 ## Multiple profiles (several bots)
 
 Each profile or bot needs its own plugin install (or a symlink to one local clone), its own `plugins.enabled` entry, its own `platform_toolsets` entries, and its own `plugins.entries` settings. Restart the gateway once after updating the profiles; one restart covers them all. The plugin name is `cli-router`, while the toolset name is `cli_router` (underscore).
@@ -59,7 +98,7 @@ Here `<plugin-dir>` is the directory Hermes reports after install, typically `~/
 python3 <plugin-dir>/doctor.py
 ```
 
-You can also ask Hermes to run the tool action `{"action": "doctor"}`. Every check prints `[ok]`, `[warn]`, or `[fail]` with a hint. `warn` entries describe reduced capability: deterministic ranking can proceed without Jev, but work retry handoff cannot. Missing or unauthenticated ai-memory and failed bubblewrap namespace probes are blockers. `fail` entries must be fixed before tasks will run. The `{"action": "diagnose"}` action writes a redacted bundle (version, Python and platform, doctor check statuses, the last 50 local journal lines, and the 10 most recent task states) to `runtime/cli-tasks/diagnose-<timestamp>.txt` and returns its path and text; it never includes prompts, repository paths, owner tokens, or command lines, and nothing leaves the machine.
+You can also ask Hermes to run the tool action `{"action": "doctor"}`. Every check prints `[ok]`, `[warn]`, `[skip]`, or `[fail]` with a hint. Without Jev, routing uses deterministic ranking; retries use deterministic progress-based continuation when `jev: false`, while enabled Jev that is unavailable blocks retry handoff. Missing ai-memory blocks only when set to `enabled`; `auto` falls back to standalone, and `disabled` skips the runtime check. Failed bubblewrap namespace probes are blockers. `fail` entries must be fixed before tasks will run. The `{"action": "diagnose"}` action writes a redacted bundle (version, Python and platform, doctor check statuses, the last 50 local journal lines, and the 10 most recent task states) to `runtime/cli-tasks/diagnose-<timestamp>.txt` and returns its path and text; it never includes prompts, repository paths, owner tokens, or command lines, and nothing leaves the machine.
 
 2. Submit a real task through the `cli_router` tool:
 
@@ -104,5 +143,5 @@ The Hermes contract tests use `~/.hermes/hermes-agent` by default. Set `HERMES_A
 * On Ubuntu 24.04 and newer, AppArmor may restrict unprivileged user namespaces, which bubblewrap needs for the sandbox. The common fix is `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`; understand the security tradeoff before applying it. To persist it across reboots, place the setting in a file such as `/etc/sysctl.d/99-userns.conf` instead of running sysctl by hand each boot.
 * An authenticated ai-memory CLI and server (ai-memory 3.1.0 or newer) for cross attempt memory and the review gate.
 * Pointers: Jev ships as the hermes-jev Hermes plugin (install it the same way if retry handoff is wanted), and ai-memory needs an authenticated CLI and server per the ai-memory project's install documentation (https://github.com/akitaonrails/ai-memory).
-* Jev configured for OpenRouter with model `typesafe/jev-1.14` is optional for ranking and required for retry handoff. Without it, ranking is deterministic, but a failed work attempt that needs another worker blocks.
+* Jev configured for OpenRouter with model `typesafe/jev-1.14` is optional. With Jev enabled but unavailable, deterministic routing works and retry handoff blocks; set `jev: false` in the per-install config for deterministic progress-based handoff.
 * `uv` is needed only for development and tests.
