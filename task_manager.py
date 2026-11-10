@@ -237,6 +237,22 @@ def _ai_memory_mode() -> str:
     return value if isinstance(value, str) and value in {"enabled", "disabled", "auto"} else "auto"
 
 
+def _max_workers() -> int:
+    """Read the host-wide worker limit from either Hermes settings shape."""
+    if not hermes_adapter.has_context():
+        return worker_resources.DEFAULT_MAX_WORKERS
+    try:
+        cfg = hermes_adapter.get_config("cli-router", {})
+    except Exception:
+        return worker_resources.DEFAULT_MAX_WORKERS
+    if not isinstance(cfg, dict):
+        return worker_resources.DEFAULT_MAX_WORKERS
+    value = cfg.get("max-workers")
+    if value is None and isinstance(cfg.get("settings"), dict):
+        value = cfg["settings"].get("max-workers")
+    return worker_resources.DEFAULT_MAX_WORKERS if value is None else value
+
+
 def _task_dir() -> Path:
     p = _root() / "runtime" / "cli-tasks"
     p.mkdir(parents=True, exist_ok=True)
@@ -1496,12 +1512,13 @@ def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, 
 
     try:
         command = worker_resources.scope_command(command, task_id, attempt_index)
-        lease = worker_resources.acquire(lambda: task_id in _CANCEL, resource_wait)
+        lease = worker_resources.acquire(lambda: task_id in _CANCEL, resource_wait,
+                                         max_workers=_max_workers())
     except worker_resources.ResourceBlocked as exc:
         if owns_tempdir:
             isolated.cleanup()
         return {"outcome": "cancelled" if exc.cancelled else "resource_blocked", "reason": str(exc)}
-    pass_fds = (*pass_fds, lease.fd)
+    pass_fds = (*pass_fds, *getattr(lease, "fds", (lease.fd,)))
     try:
         record = _read(task_id) if hermes_adapter.has_context() else None
         if record:

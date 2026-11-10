@@ -1,5 +1,7 @@
 import sys
 import tempfile
+import subprocess
+import textwrap
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,19 +24,21 @@ def test_scope_command_enforces_limits_without_expanding_prompts():
     assert command[-3:] == ["/bin/echo", "$HOME", "--"]
 
 
-def test_queue_is_cancellable_and_never_starts_when_full():
+def test_different_repositories_run_concurrently_and_third_hits_default_capacity():
     import worker_resources as resources
     with tempfile.TemporaryDirectory() as temp:
         lock = Path(temp) / "slot.lock"
         with patch.object(resources, "memory_block_reason", return_value=None):
             first = resources.acquire(lambda: False, lambda msg: None, lock_path=lock)
+            second = resources.acquire(lambda: False, lambda msg: None, lock_path=lock)
             try:
-                with pytest.raises(resources.ResourceBlocked, match="queue expired"):
+                with pytest.raises(resources.ResourceBlocked, match="capacity reached"):
                     resources.acquire(lambda: False, lambda msg: None, lock_path=lock, timeout=0)
                 with pytest.raises(resources.ResourceBlocked) as error:
                     resources.acquire(lambda: True, lambda msg: None, lock_path=lock)
                 assert error.value.cancelled
             finally:
+                second.close()
                 first.close()
 
 
@@ -42,6 +46,14 @@ def test_telemetry_fails_closed():
     import worker_resources as resources
     with patch.object(Path, "read_text", side_effect=OSError("not readable")):
         assert resources.memory_block_reason() == "host memory telemetry is unavailable"
+
+
+def test_unavailable_telemetry_denies_admission_with_memory_reason():
+    import worker_resources as resources
+    with tempfile.TemporaryDirectory() as temp, \
+         patch.object(resources, "memory_block_reason", return_value="host memory telemetry is unavailable"):
+        with pytest.raises(resources.ResourceBlocked, match="memory pressure: host memory telemetry is unavailable"):
+            resources.acquire(lambda: False, lambda _: None, lock_path=Path(temp) / "slot.lock", timeout=0)
 
 
 def test_worker_cannot_launch_when_resource_guard_blocks():
@@ -63,7 +75,7 @@ def test_worker_launch_holds_slot_and_inherits_repository_lock():
     import task_manager as tm
     import worker_resources as resources
     from unittest.mock import MagicMock
-    lease = MagicMock(fd=71)
+    lease = MagicMock(fd=71, fds=(71, 73))
     process = MagicMock(returncode=0)
     process.communicate.return_value = ("done", "")
     with tempfile.TemporaryDirectory() as temp:
@@ -79,7 +91,27 @@ def test_worker_launch_holds_slot_and_inherits_repository_lock():
             result = tm._run_candidate({"cli": "codex", "model": "test"}, "task", Path(temp), "change", "a" * 32, [])
     assert result["outcome"] == "needs_verification"
     assert "--scope" in start.call_args.args[0]
-    assert start.call_args.kwargs["pass_fds"] == (72, 71)
+    assert start.call_args.kwargs["pass_fds"] == (72, 71, 73)
+    lease.close.assert_called_once()
+
+
+def test_worker_launch_failure_releases_lease():
+    import task_manager as tm
+    import worker_resources as resources
+    from unittest.mock import MagicMock
+    lease = MagicMock(fd=71, fds=(71, 73))
+    with tempfile.TemporaryDirectory() as temp, \
+         patch.dict("os.environ", {"AI_MEMORY_AUTH_TOKEN": "mock-token"}), \
+         patch.object(tm.ai_memory_bridge, "_parent_env", return_value={"AI_MEMORY_AUTH_TOKEN": "mock-token"}), \
+         patch.object(resources, "acquire", return_value=lease), \
+         patch.object(tm.ai_memory_bridge, "verify_runtime"), \
+         patch.object(tm.ai_memory_bridge, "find_workstream", return_value="a" * 36), \
+         patch.object(tm.ai_memory_bridge, "verify_attempt", return_value=1), \
+         patch.object(tm, "_installed_cli", return_value="/usr/bin/true"), \
+         patch.object(tm.subprocess, "Popen", side_effect=OSError("synthetic start failure")):
+        result = tm._run_candidate({"cli": "codex", "model": "test"}, "task", Path(temp),
+                                   "change", "a" * 32, [])
+    assert result["outcome"] == "resource_blocked"
     lease.close.assert_called_once()
 
 
@@ -110,9 +142,122 @@ def test_admission_waits_for_memory_and_releases_global_slot():
         with patch.object(resources, "memory_block_reason", side_effect=["low RAM", None]), \
              patch.object(resources.time, "sleep"):
             lease = resources.acquire(lambda: False, waits.append, lock_path=lock)
-        assert waits == ["low RAM"]
+        assert waits == ["memory pressure: low RAM"]
         assert lease.fd >= 0
         lease.close()
         with patch.object(resources, "memory_block_reason", return_value=None):
             second = resources.acquire(lambda: False, waits.append, lock_path=lock, timeout=0)
             second.close()
+
+
+def test_legacy_exclusive_holder_blocks_new_protocol():
+    import fcntl
+    import os
+    import worker_resources as resources
+    with tempfile.TemporaryDirectory() as temp:
+        lock = Path(temp) / "slot.lock"
+        legacy_fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(legacy_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            with patch.object(resources, "memory_block_reason", return_value=None), \
+                 pytest.raises(resources.ResourceBlocked, match="legacy worker holds"):
+                resources.acquire(lambda: False, lambda _: None, lock_path=lock, timeout=0)
+        finally:
+            os.close(legacy_fd)
+
+
+def test_capacity_setting_change_waits_until_existing_group_drains():
+    import worker_resources as resources
+    with tempfile.TemporaryDirectory() as temp, \
+         patch.object(resources, "memory_block_reason", return_value=None):
+        lock = Path(temp) / "slot.lock"
+        current = resources.acquire(lambda: False, lambda _: None, lock_path=lock, max_workers=2)
+        with pytest.raises(resources.ResourceBlocked, match="setting differs"):
+            resources.acquire(lambda: False, lambda _: None, lock_path=lock,
+                              max_workers=3, timeout=0)
+        current.close()
+        changed = resources.acquire(lambda: False, lambda _: None, lock_path=lock,
+                                    max_workers=3, timeout=0)
+        changed.close()
+        assert (Path(temp) / "capacity").read_text() == "3\n"
+
+
+def test_capacity_setting_is_bounded_positive_integer():
+    import worker_resources as resources
+    with tempfile.TemporaryDirectory() as temp:
+        lock = Path(temp) / "slot.lock"
+        for value in (True, 0, -1, 1.5, "2", resources.MAX_WORKERS_LIMIT + 1):
+            with pytest.raises(resources.ResourceBlocked, match="max-workers"):
+                resources.acquire(lambda: False, lambda _: None, lock_path=lock,
+                                  max_workers=value, timeout=0)
+
+
+def test_unavailable_lock_storage_fails_closed_as_resource_block():
+    import worker_resources as resources
+    with tempfile.TemporaryDirectory() as temp, \
+         patch.object(resources, "_open_lock", side_effect=OSError("read-only")), \
+         pytest.raises(resources.ResourceBlocked, match="admission storage is unavailable"):
+        resources.acquire(lambda: False, lambda _: None,
+                          lock_path=Path(temp) / "slot.lock", timeout=0)
+
+
+def test_process_crash_releases_capacity_lease():
+    import worker_resources as resources
+    with tempfile.TemporaryDirectory() as temp:
+        lock = Path(temp) / "slot.lock"
+        script = textwrap.dedent("""\
+            import sys, time
+            from pathlib import Path
+            sys.path.insert(0, sys.argv[1])
+            import worker_resources as r
+            r.memory_block_reason = lambda: None
+            lease = r.acquire(lambda: False, lambda _: None, lock_path=Path(sys.argv[2]), timeout=0)
+            print('admitted', flush=True)
+            time.sleep(30)
+        """)
+        child = subprocess.Popen([sys.executable, "-c", script, str(Path(__file__).resolve().parents[1]), str(lock)],
+                                 stdout=subprocess.PIPE, text=True)
+        assert child.stdout.readline().strip() == "admitted"
+        child.kill()
+        child.wait(timeout=5)
+        with patch.object(resources, "memory_block_reason", return_value=None):
+            lease = resources.acquire(lambda: False, lambda _: None, lock_path=lock, timeout=0)
+            lease.close()
+
+
+def test_subprocess_race_never_admits_more_than_default_capacity():
+    import worker_resources as resources
+    with tempfile.TemporaryDirectory() as temp:
+        lock = Path(temp) / "slot.lock"
+        script = textwrap.dedent("""\
+            import sys, time
+            from pathlib import Path
+            sys.path.insert(0, sys.argv[1])
+            import worker_resources as r
+            r.memory_block_reason = lambda: None
+            try:
+                lease = r.acquire(lambda: False, lambda _: None, lock_path=Path(sys.argv[2]), timeout=0)
+            except r.ResourceBlocked as exc:
+                print('denied:' + str(exc), flush=True)
+                raise SystemExit(0)
+            print('admitted', flush=True)
+            time.sleep(.3)
+            lease.close()
+        """)
+        children = [subprocess.Popen([sys.executable, "-c", script,
+                     str(Path(__file__).resolve().parents[1]), str(lock)],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
+        outputs = [child.communicate(timeout=10)[0].strip() for child in children]
+        assert sum(line == "admitted" for line in outputs) == resources.DEFAULT_MAX_WORKERS
+        assert sum("capacity reached" in line for line in outputs) == 4 - resources.DEFAULT_MAX_WORKERS
+
+
+def test_configured_worker_limit_reads_direct_and_nested_settings():
+    import hermes_adapter
+    import task_manager as tm
+    for config in ({"max-workers": 3}, {"settings": {"max-workers": 3}}):
+        with patch.object(hermes_adapter, "has_context", return_value=True), \
+             patch.object(hermes_adapter, "get_config", return_value=config):
+            assert tm._max_workers() == 3
+    with patch.object(hermes_adapter, "has_context", return_value=False):
+        assert tm._max_workers() == 2
