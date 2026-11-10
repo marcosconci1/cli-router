@@ -2547,7 +2547,9 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                             "reviews": []}
                     last_checks["external"] = skip
                     last_checks["review_skipped"] = True
-                    last_checks["independent_checks_passed"] = True
+                    # No independent review ran, so it cannot have passed. The task
+                    # is still accepted below because the local checks passed.
+                    last_checks["independent_checks_passed"] = False
                     _transition(data, "verifying", "independent_review_skipped",
                                 "acceptance checks passed; independent review skipped by configuration",
                                 attempt=attempt_index)
@@ -2589,7 +2591,8 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                         _transition(data, "verifying", "independent_review_skipped",
                                     "independent review skipped by configuration; local acceptance checks failed",
                                     attempt=attempt_index)
-                if last_checks["independent_checks_passed"]:
+                if last_checks["independent_checks_passed"] or (
+                        last_checks.get("review_skipped") and local_checks_passed):
                     outcome_kind = "verified"
                 else:
                     outcome_kind = "unreviewed" if external_unreviewed else "failed_verification"

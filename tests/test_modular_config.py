@@ -172,6 +172,8 @@ def test_review_disabled_records_skip_and_keeps_acceptance_gate(tmp_path, accept
         review = data["verification"]["external"]
         assert review["skipped"] is True
         assert "passed" not in review
+        assert data["verification"]["independent_checks_passed"] is False
+        assert data["verification"]["review_skipped"] is True
         assert data["message"] == "acceptance checks passed; independent review skipped by configuration"
     else:
         review = data["verification"]["external"]
