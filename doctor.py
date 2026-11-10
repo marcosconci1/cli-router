@@ -42,6 +42,26 @@ def _modular_config() -> dict[str, Any]:
     return module._load_modular_config()
 
 
+def _check_config() -> dict[str, str]:
+    try:
+        cfg = _modular_config()
+    except Exception as exc:
+        return {"name": "config", "status": "fail", "hint": f"invalid cli-router.yaml: {exc}"}
+    if not cfg:
+        return {"name": "config", "status": "ok",
+                "hint": "no cli-router.yaml (defaults)"}
+    providers = cfg.get("providers") or {}
+    disabled = sorted(c for c, v in providers.items() if v.get("enabled") is False)
+    excluded = {c: len(v.get("excluded_models") or []) for c, v in sorted(providers.items())
+                if v.get("excluded_models")}
+    hint = (f"cli-router.yaml valid: providers disabled={disabled or 'none'}; "
+            f"excluded models={excluded or 'none'}; jev={cfg.get('jev', 'default')}; "
+            f"ai-memory={cfg.get('ai-memory', 'default')}; "
+            f"independent-review={cfg.get('independent-review', 'default')}; "
+            f"max-workers={cfg.get('max-workers', 'default')}")
+    return {"name": "config", "status": "ok", "hint": hint}
+
+
 def _check_bubblewrap() -> dict[str, str]:
     name = "bubblewrap"
     bwrap_path = shutil.which("bwrap") or shutil.which("bubblewrap")
@@ -367,6 +387,7 @@ def _check_runtime_dir(home: Path | None) -> dict[str, str]:
 def run_checks(home: str | os.PathLike[str] | None = None) -> list[dict[str, str]]:
     resolved_home = _resolve_home(home)
     checks: list[dict[str, str]] = []
+    checks.append(_check_config())
     checks.append(_check_bubblewrap())
     checks.append(_check_git())
     checks.append(_check_systemd_run())

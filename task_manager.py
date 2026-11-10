@@ -114,6 +114,8 @@ def _yaml_scalar(value: str, path: Path, line: int) -> Any:
             except json.JSONDecodeError as exc:
                 raise ConfigurationError(f"{path}: line {line}: invalid quoted value") from exc
         return value[1:-1].replace("''", "'")
+    if re.fullmatch(r"-?\d+", value):
+        return int(value)
     return value
 
 
@@ -176,7 +178,7 @@ def _validate_modular_config(payload: Any, path: Path) -> dict[str, Any]:
     cfg = payload["cli-router"]
     if cfg is None:
         cfg = {}
-    allowed = {"providers", "jev", "ai-memory", "independent-review"}
+    allowed = {"providers", "jev", "ai-memory", "independent-review", "max-workers"}
     if not isinstance(cfg, dict) or set(cfg) - allowed:
         raise ConfigurationError(f"{path}: cli-router must be a mapping with supported settings")
     providers = cfg.get("providers", {})
@@ -204,6 +206,10 @@ def _validate_modular_config(payload: Any, path: Path) -> dict[str, Any]:
     if "ai-memory" in cfg and (not isinstance(cfg["ai-memory"], str)
                                 or cfg["ai-memory"] not in {"enabled", "disabled", "auto"}):
         raise ConfigurationError(f"{path}: ai-memory must be enabled, disabled, or auto")
+    if "max-workers" in cfg:
+        value = cfg["max-workers"]
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
+            raise ConfigurationError(f"{path}: max-workers must be an integer from 1 to 8")
     return cfg
 
 
@@ -238,7 +244,10 @@ def _ai_memory_mode() -> str:
 
 
 def _max_workers() -> int:
-    """Read the host-wide worker limit from either Hermes settings shape."""
+    """Read the worker limit: cli-router.yaml, then Hermes settings, then default."""
+    modular = _load_modular_config()
+    if "max-workers" in modular:
+        return modular["max-workers"]
     if not hermes_adapter.has_context():
         return worker_resources.DEFAULT_MAX_WORKERS
     try:

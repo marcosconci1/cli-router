@@ -208,3 +208,35 @@ def test_valid_nested_providers_with_comments_and_blanks_still_parse():
         "providers": {"claude": {"enabled": True, "excluded_models": ["a", "b"]},
                       "codex": {"enabled": False}},
         "jev": False}}
+
+
+def _workers(tmp_path, body, hermes=None):
+    text = "cli-router:\n" + body if body is not None else None
+    if text is None:
+        return patch.object(tm, "_plugin_dir", return_value=tmp_path), hermes
+    return write_config(tmp_path, text), hermes
+
+
+def _run_workers(tmp_path, body, hermes=None):
+    cfg, _ = _workers(tmp_path, body)
+    with cfg, patch.object(hermes_adapter, "has_context", return_value=hermes is not None), \
+         patch.object(hermes_adapter, "get_config", return_value=hermes or {}):
+        return tm._max_workers()
+
+
+def test_max_workers_file_wins_over_hermes(tmp_path):
+    assert _run_workers(tmp_path, "  max-workers: 4\n", {"max-workers": 3}) == 4
+
+
+def test_max_workers_hermes_used_when_file_omits_it(tmp_path):
+    assert _run_workers(tmp_path, "  jev: true\n", {"max-workers": 3}) == 3
+
+
+def test_max_workers_default_two(tmp_path):
+    assert _run_workers(tmp_path, None) == 2
+
+
+@pytest.mark.parametrize("value", ["true", "0", "9", "2.5", '"3"', "-1"])
+def test_max_workers_invalid_values_raise(tmp_path, value):
+    with pytest.raises(tm.ConfigurationError, match=r"cli-router\.yaml.*max-workers"):
+        _run_workers(tmp_path, f"  max-workers: {value}\n", {"max-workers": 3})
