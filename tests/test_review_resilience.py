@@ -76,14 +76,17 @@ def test_argon_429_keeps_flash_eligible_in_review():
                  {"outcome": "needs_verification", "summary": "VERDICT: PASS", "ai_memory": MEMORY},
                  {"outcome": "needs_verification", "summary": "VERDICT: PASS", "ai_memory": MEMORY},
              ]) as run, \
-             patch.object(tm.ai_memory_bridge, "read_context",
-                          return_value=(f"Code task {task_id} attempt 2", 1)), \
+             patch.object(tm.ai_memory_bridge, "read_context_with_wait",
+                          return_value=(f"Code task {task_id} attempt 2", 1)) as read_context, \
              patch.object(tm, "_jev_handoff") as handoff:
             result = tm._external_verification(task_id, Path(temp), "review", [], routes, routes[0], None, 2)
     assert [call.args[0]["model"] for call in run.call_args_list] == [
         "gemini-4-argon-medium", "gemini-3.8-flash-low", "kimi-code/k3.1-pro",
     ]
     assert result["passed"]
+    read_context.assert_called_once_with(
+        Path(temp), MEMORY["workstream_id"],
+        required_marker=f"Code task {task_id} attempt 2")
     handoff.assert_not_called()
 
 

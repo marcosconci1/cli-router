@@ -10,6 +10,87 @@ import ai_memory_bridge as bridge
 
 
 class AiMemoryBridgeTests(unittest.TestCase):
+    def test_read_context_with_wait_retries_persistence_lag_and_preserves_context(self):
+        packet = "Historical task events from ai-memory follow."
+        absent = bridge.AiMemoryError("task workstream has no persisted attempt context")
+        calls = []
+
+        def read(*_args, **_kwargs):
+            calls.append(None)
+            if len(calls) < 3:
+                raise absent
+            return packet, 7
+
+        ticks = iter([0.0, 0.25, 0.5])
+        with patch.object(bridge, "read_context", side_effect=read), \
+             patch.object(bridge.time, "monotonic", side_effect=lambda: next(ticks)), \
+             patch.object(bridge.time, "sleep") as sleep:
+            result = bridge.read_context_with_wait(Path("/repo"), "a" * 36)
+        self.assertEqual(result, (packet, 7))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_read_context_with_wait_forwards_required_marker_while_retrying(self):
+        marker = "Code task id attempt 2"
+        absent = bridge.AiMemoryError(
+            "prior attempt is absent from canonical memory; failover stopped")
+        calls = []
+
+        def read(_cwd, _stream, *, required_marker=None):
+            calls.append(required_marker)
+            if len(calls) == 1:
+                raise absent
+            return "context with marker", 8
+
+        with patch.object(bridge, "read_context", side_effect=read), \
+             patch.object(bridge.time, "monotonic", side_effect=[0.0, 0.1]), \
+             patch.object(bridge.time, "sleep") as sleep:
+            result = bridge.read_context_with_wait(
+                Path("/repo"), "a" * 36, required_marker=marker)
+
+        self.assertEqual(result, ("context with marker", 8))
+        self.assertEqual(calls, [marker, marker])
+        sleep.assert_called_once_with(bridge.CONTEXT_WAIT_POLL_SECONDS)
+
+    def test_read_context_with_wait_raises_original_lag_error_after_budget(self):
+        message = "prior attempt is absent from canonical memory; failover stopped"
+        now = [0.0]
+        reads = []
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        def read(*_args, **_kwargs):
+            reads.append(None)
+            raise bridge.AiMemoryError(message)
+
+        with patch.object(bridge, "read_context", side_effect=read), \
+             patch.object(bridge.time, "monotonic", side_effect=lambda: now[0]), \
+             patch.object(bridge.time, "sleep", side_effect=sleep):
+            with self.assertRaisesRegex(bridge.AiMemoryError, f"^{message}$"):
+                bridge.read_context_with_wait(Path("/repo"), "a" * 36)
+        self.assertEqual(now[0], bridge.CONTEXT_WAIT_BUDGET_SECONDS)
+        self.assertGreater(len(reads), 1)
+
+    def test_read_context_with_wait_does_not_retry_non_lag_errors(self):
+        error = bridge.AiMemoryError("ai-memory returned an invalid workstream ledger")
+        with patch.object(bridge, "read_context", side_effect=error) as read, \
+             patch.object(bridge.time, "monotonic") as monotonic, \
+             patch.object(bridge.time, "sleep") as sleep:
+            with self.assertRaisesRegex(bridge.AiMemoryError, "invalid workstream ledger"):
+                bridge.read_context_with_wait(Path("/repo"), "a" * 36)
+        read.assert_called_once()
+        monotonic.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_read_context_with_wait_matches_no_lag_context_text(self):
+        events = [{"sequence": 1, "agent": "codex", "kind": "message", "role": "user",
+                   "content": "Code task id attempt 1"}]
+        with patch.object(bridge, "_command", return_value=json.dumps(events)):
+            direct = bridge.read_context(Path("/repo"), "a" * 36)
+            waited = bridge.read_context_with_wait(Path("/repo"), "a" * 36)
+        self.assertEqual(waited[0], direct[0])
+
     def test_runtime_requires_authenticated_live_server(self):
         class Completed:
             returncode = 0

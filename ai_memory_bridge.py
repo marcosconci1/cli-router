@@ -18,6 +18,12 @@ from typing import Any
 MIN_VERSION = (3, 1, 0)
 MAX_CONTEXT_BYTES = 12_000
 MAX_EVENT_BYTES = 1_200
+CONTEXT_WAIT_POLL_SECONDS = 3
+CONTEXT_WAIT_BUDGET_SECONDS = 90
+_CONTEXT_PERSISTENCE_LAG_ERRORS = {
+    "task workstream has no persisted attempt context",
+    "prior attempt is absent from canonical memory; failover stopped",
+}
 _RESERVED_ENV = {
     "AI_MEMORY_AUTH_TOKEN", "AI_MEMORY_RUN_ID", "AI_MEMORY_WORKSTREAM_ID",
     "AI_MEMORY_PREVIOUS_SESSION_HISTORY", "AI_MEMORY_HOOK_URL",
@@ -163,6 +169,25 @@ def read_context(cwd: Path, stream_id: str, *, required_marker: str | None = Non
         tail = encoded[-budget:].decode("utf-8", errors="ignore") if budget else ""
         packet = prefix + tail
     return packet, latest
+
+
+def read_context_with_wait(cwd: Path, stream_id: str, *,
+                           required_marker: str | None = None) -> tuple[str, int]:
+    """Wait briefly for a just-finished attempt to reach the canonical ledger."""
+    deadline = None
+    while True:
+        try:
+            return read_context(cwd, stream_id, required_marker=required_marker)
+        except AiMemoryError as exc:
+            if str(exc) not in _CONTEXT_PERSISTENCE_LAG_ERRORS:
+                raise
+            now = time.monotonic()
+            if deadline is None:
+                deadline = now + CONTEXT_WAIT_BUDGET_SECONDS
+            remaining = deadline - now
+            if remaining <= 0:
+                raise
+            time.sleep(min(CONTEXT_WAIT_POLL_SECONDS, remaining))
 
 
 def managed_command(task_id: str, attempt: int, cli: str, executable: str,
