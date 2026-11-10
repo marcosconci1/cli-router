@@ -2302,8 +2302,9 @@ def _external_verification(task_id: str, repo: Path, task: str,
         if pending_handoff and memory_mode != "standalone":
             try:
                 memory = pending_handoff.get("ai_memory") or {}
-                context, _ = ai_memory_bridge.read_context(repo, memory["workstream_id"])
                 marker = f"Code task {task_id} attempt {pending_handoff['attempt_index']}"
+                context, _ = ai_memory_bridge.read_context_with_wait(
+                    repo, memory["workstream_id"], required_marker=marker)
                 if marker not in context:
                     raise RuntimeError("prior review attempt is absent from canonical memory")
             except Exception as exc:
@@ -2496,7 +2497,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                         if not expected:
                             raise ai_memory_bridge.AiMemoryError(
                                 "prior attempt is absent from canonical memory; failover stopped")
-                        memory_context, _ = ai_memory_bridge.read_context(
+                        memory_context, _ = ai_memory_bridge.read_context_with_wait(
                             repo, prior_stream, required_marker=expected)
                         coordinator_checkpoint = json.dumps({
                             "task_id": task_id,
@@ -2670,8 +2671,9 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                 if next_candidate and outcome_kind != "pricing_or_capability_changed":
                     _transition(data, "handoff", "handoff_started", attempt=attempt_index)
                     try:
-                        handoff_context, sequence = ai_memory_bridge.read_context(
-                            repo, memory_ref["workstream_id"])
+                        expected = (data.get("ai_memory") or {}).get("last_attempt_marker")
+                        handoff_context, sequence = ai_memory_bridge.read_context_with_wait(
+                            repo, memory_ref["workstream_id"], required_marker=expected)
                     except Exception as exc:
                         _transition(data, "blocked", "task_blocked",
                                     "ai-memory context is unavailable; no next worker was started",

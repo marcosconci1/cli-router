@@ -929,7 +929,7 @@ class PolicyTests(unittest.TestCase):
                             "prior attempt is absent from canonical memory; failover stopped")
                     return ("ledger without attempt marker", 1)
                 with patch.object(tm.ai_memory_bridge, "verify_runtime"), \
-                     patch.object(tm.ai_memory_bridge, "read_context", side_effect=missing_marker), \
+                     patch.object(tm.ai_memory_bridge, "read_context_with_wait", side_effect=missing_marker) as read_context, \
                      patch.object(tm, "_run_candidate", return_value={"outcome": "needs_verification",
                          "summary": "partial", "ai_memory": ref}) as run, \
                      patch.object(tm, "_external_verification", return_value={"passed": True, "summary": "passed"}), \
@@ -939,6 +939,9 @@ class PolicyTests(unittest.TestCase):
                                 {"cli": "codex", "model": "m2", "effort": "low"}], None, lock)
                 data = tm._read(task_id)
                 self.assertEqual(run.call_count, 1)
+                read_context.assert_called_once_with(
+                    repo, ref["workstream_id"],
+                    required_marker=f"Code task {task_id} attempt 1")
                 self.assertEqual(data["state"], "blocked")
                 self.assertIn("no next worker was started", data["message"])
             finally:

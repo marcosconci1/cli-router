@@ -6,6 +6,7 @@
 - Independent review can be switched off, and a skipped review is recorded as skipped, never as passed.
 - A bounded worker pool replaces the single host-wide slot, so different repositories run side by side; the default is 2 workers and same-repository changes stay exclusive.
 - Configuration errors fail loudly.
+- Task handoff waits up to 90 seconds for the ai-memory ledger before stopping, so a slow write no longer blocks a healthy task.
 - Align the `plugin.yaml` version with `pyproject.toml`.
 
 ## 0.5.0
