@@ -256,6 +256,34 @@ platform_toolsets:
                 self.assertTrue(res.get("ok"))
                 self.assertIsInstance(res.get("checks"), list)
 
+    def _config_check(self, text):
+        with tempfile.TemporaryDirectory() as temp:
+            if text is not None:
+                (Path(temp) / "cli-router.yaml").write_text(text, encoding="utf-8")
+            with patch.object(task_manager, "_plugin_dir", return_value=Path(temp)):
+                return doctor._check_config()
+
+    def test_config_check_no_file(self):
+        res = self._config_check(None)
+        self.assertEqual((res["name"], res["status"]), ("config", "ok"))
+        self.assertIn("defaults", res["hint"])
+
+    def test_config_check_valid_prints_effective_values(self):
+        res = self._config_check("cli-router:\n  providers:\n    codex:\n      enabled: false\n"
+                                 "      excluded_models: [a, b]\n  jev: false\n  max-workers: 3\n")
+        self.assertEqual(res["status"], "ok")
+        for text in ("codex", "jev=False", "max-workers=3", "'codex': 2"):
+            self.assertIn(text, res["hint"])
+
+    def test_config_check_invalid_fails(self):
+        res = self._config_check("cli-router:\n  max-workers: 9\n")
+        self.assertEqual(res["status"], "fail")
+        self.assertIn("max-workers", res["hint"])
+
+    def test_run_checks_includes_config(self):
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertIn("config", [c["name"] for c in doctor.run_checks(temp)])
+
 
 if __name__ == "__main__":
     unittest.main()

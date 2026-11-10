@@ -21,3 +21,5 @@ cli-router:
   jev: true
   ai-memory: auto
   independent-review: true
+  # Concurrent workers across repositories, an integer from 1 to 8.
+  max-workers: 2
