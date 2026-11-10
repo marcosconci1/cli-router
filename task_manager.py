@@ -91,6 +91,27 @@ def _plugin_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _config_path() -> Path | None:
+    """Return the selected modular config path, preferring stable user locations."""
+    override = os.environ.get("CLI_ROUTER_CONFIG")
+    if override is not None:
+        path = Path(override).expanduser()
+        if path.is_file():
+            return path
+        raise ConfigurationError(f"CLI_ROUTER_CONFIG points to a missing file: {path}")
+    try:
+        home_config = _root() / "cli-router.yaml"
+    except Exception:
+        # Standalone development imports may lack Hermes' profile-home API.
+        home_config = None
+    for path in (home_config, _plugin_dir() / "cli-router.yaml"):
+        if path is None:
+            continue
+        if path.is_file():
+            return path
+    return None
+
+
 def _yaml_scalar(value: str, path: Path, line: int) -> Any:
     value = value.strip()
     if value in {"true", "false"}:
@@ -214,8 +235,8 @@ def _validate_modular_config(payload: Any, path: Path) -> dict[str, Any]:
 
 
 def _load_modular_config() -> dict[str, Any]:
-    path = _plugin_dir() / "cli-router.yaml"
-    if not path.exists():
+    path = _config_path()
+    if path is None:
         return {}
     try:
         payload = _parse_config_yaml(path.read_text(encoding="utf-8"), path)

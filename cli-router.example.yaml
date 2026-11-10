@@ -1,6 +1,8 @@
-# Copy this file to cli-router.yaml beside the installed plugin's task_manager.py.
-# The per-install file overrides only the settings you specify; absent settings
-# keep their Hermes configuration or cli-router default.
+# Copy this file to <hermes-home>/cli-router.yaml, the Hermes home of the active profile.
+# For code profiles this is the profile directory under ~/.hermes/profiles/<name>/.
+# CLI_ROUTER_CONFIG overrides this path; the plugin-directory file is a legacy fallback.
+# This file overrides only the settings specified; absent settings keep their Hermes
+# configuration or cli-router default.
 cli-router:
   providers:
     codex:

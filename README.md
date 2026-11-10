@@ -86,11 +86,13 @@ Standalone runs invoke the CLI directly and reviews run without ledger confirmat
 
 ## Per-install configuration
 
-Copy `cli-router.example.yaml` from the installed plugin directory to `cli-router.yaml` beside
-`task_manager.py`. The user file is preserved by updates and overrides only the settings it
-contains. It can control providers and exact per-CLI model exclusions, Jev, ai-memory, and
-independent review, and the worker limit. See [Configuration](docs/configuration.md) for
-precedence, setup, and supported YAML syntax.
+Copy `cli-router.example.yaml` from the installed plugin directory to `<hermes-home>/cli-router.yaml`,
+the Hermes home of the active profile (for a code profile, typically `~/.hermes/profiles/<name>/`).
+The Hermes home is outside the plugin directory, so reinstalling or updating the plugin does not
+touch it. `CLI_ROUTER_CONFIG` can override the path; the plugin-directory file remains a legacy
+fallback. The file controls providers and exact per-CLI model exclusions, Jev, ai-memory, independent
+review, and the worker limit. See [Configuration](docs/configuration.md) for precedence, setup, and
+supported YAML syntax.
 
 ## Documentation
 
