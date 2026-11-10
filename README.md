@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <b>Route coding tasks across AI CLIs by live quota, with two independent reviews.</b> cli-router brings this capability to Hermes Agent. Submit a coding task, and the AI CLI with real quota room builds it, commits it on your branch, and passes two independent reviews before it is done.
+  <b>Route coding tasks across AI CLIs by live quota, with two independent reviews by default.</b> cli-router brings this capability to Hermes Agent. Submit a coding task, and the AI CLI with real quota room builds it, commits it on your branch, and passes two independent reviews by default before it is done.
 </p>
 
 
@@ -17,14 +17,14 @@ Developers who use AI coding CLIs manage several subscriptions at once. Each CLI
 
 cli-router is a plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that takes over this work. You submit one task. The router reads live usage windows from every configured CLI, keeps a reserve, and picks the one with room. The chosen CLI runs with sandbox write controls and commits the result on your branch. The bubblewrap sandbox leaves host files readable except for masked paths, and network access remains open; see [the sandbox contract](docs/sandbox.md). By default, before the change counts as done, two distinct models in fresh contexts and separate disposable snapshots review it independently. Models may share a provider. A review that fails sends the task back with the required changes.
 
-Work spreads across the installed accounts so no single account absorbs everything, within each provider's terms of service; tasks keep moving when a quota window closes, and every change lands with a second opinion recorded in the task history.
+Work spreads across the installed accounts so no single account absorbs everything, within each provider's terms of service; tasks keep moving when a quota window closes, and by default every change lands with a second opinion recorded in the task history.
 
 ```mermaid
 flowchart LR
     T["Your task"] --> R{"cli-router"}
     R -->|"picks a route<br>by live quota"| W["Worker CLI<br>(sandboxed)"]
     W --> G["Commit on your branch"]
-    G --> V{"2 independent<br>model reviews"}
+    G --> V{"2 independent<br>model reviews<br>(default)"}
     V -->|"both PASS"| D["Done"]
     V -->|"FAIL"| R
 ```
