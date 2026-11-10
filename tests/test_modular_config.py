@@ -179,3 +179,32 @@ def test_review_disabled_records_skip_and_keeps_acceptance_gate(tmp_path, accept
         assert "local acceptance checks failed" in review["summary"]
         assert "passed" not in review
 
+
+
+_YAML = Path("cli-router.yaml")
+
+
+@pytest.mark.parametrize("text", [
+    "cli-router:\n  jev: false\n    independent-review: false\n",
+    "cli-router:\n  jev: false\n   independent-review: false\n",
+    "cli-router:\n    jev: false\n  independent-review: false\n",
+    "cli-router:\n  providers:\n    claude:\n      enabled: true\n     x: 1\n",
+])
+def test_misindented_entries_raise_with_file_and_line(text):
+    with pytest.raises(tm.ConfigurationError, match=r"cli-router\.yaml: line \d+"):
+        tm._parse_config_yaml(text, _YAML)
+
+
+def test_misindent_error_names_line_number():
+    with pytest.raises(tm.ConfigurationError, match="line 3"):
+        tm._parse_config_yaml("cli-router:\n  jev: false\n    independent-review: false\n", _YAML)
+
+
+def test_valid_nested_providers_with_comments_and_blanks_still_parse():
+    text = ("# top\ncli-router:\n\n  # c\n  providers:\n    claude:\n      enabled: true\n"
+            "      excluded_models:\n        - a\n        - b\n    codex:\n      enabled: false\n"
+            "  jev: false\n")
+    assert tm._parse_config_yaml(text, _YAML) == {"cli-router": {
+        "providers": {"claude": {"enabled": True, "excluded_models": ["a", "b"]},
+                      "codex": {"enabled": False}},
+        "jev": False}}

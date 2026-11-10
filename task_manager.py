@@ -120,7 +120,8 @@ def _yaml_scalar(value: str, path: Path, line: int) -> Any:
 def _parse_config_yaml(text: str, path: Path) -> dict[str, Any]:
     """Parse the deliberately small, safe YAML subset used by cli-router config."""
     root: dict[str, Any] = {}
-    stack: list[tuple[int, Any]] = [(-1, root)]
+    # Each frame: [opener indent, container, indent shared by its children (None until seen)].
+    stack: list[list[Any]] = [[-1, root, None]]
     for line_no, raw in enumerate(text.splitlines(), 1):
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
@@ -133,6 +134,10 @@ def _parse_config_yaml(text: str, path: Path) -> dict[str, Any]:
         while len(stack) > 1 and indent <= stack[-1][0]:
             stack.pop()
         parent = stack[-1][1]
+        if stack[-1][2] is None:
+            stack[-1][2] = indent
+        elif indent != stack[-1][2]:
+            raise ConfigurationError(f"{path}: line {line_no}: inconsistent indentation")
         if content.startswith("- "):
             if not isinstance(parent, list):
                 raise ConfigurationError(f"{path}: line {line_no}: unexpected sequence item")
@@ -159,7 +164,7 @@ def _parse_config_yaml(text: str, path: Path) -> dict[str, Any]:
                 value = [] if next_nonempty.lstrip().startswith("- ") else {}
             parent[key] = value
             if isinstance(value, (dict, list)):
-                stack.append((indent, value))
+                stack.append([indent, value, None])
         else:
             parent[key] = _yaml_scalar(raw_value, path, line_no)
     return root
