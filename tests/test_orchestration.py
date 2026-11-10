@@ -246,6 +246,9 @@ class OrchestrationTests(unittest.TestCase):
         self.assertIn("Missing required", result["summary"])
 
     def test_verifier_wrapper_stays_in_original_repository_scope(self):
+        # Codex state is bound only when present, so create it in a hermetic home instead of relying on the host.
+        self.fake_home = self.root / "fakehome"
+        (self.fake_home / ".codex").mkdir(parents=True)
         repo = self._repo()
         snapshot = self.root / "snapshot"
         snapshot.mkdir()
@@ -265,6 +268,7 @@ class OrchestrationTests(unittest.TestCase):
         route = {"cli": "codex", "model": "verification", "effort": "low"}
         with patch.dict("os.environ", {"AI_MEMORY_AUTH_TOKEN": "mock-token"}), \
              patch.object(tm.ai_memory_bridge, "_parent_env", return_value={"AI_MEMORY_AUTH_TOKEN": "mock-token"}), \
+             patch.object(tm.Path, "home", return_value=self.fake_home), \
              patch.object(tm.subprocess, "Popen", side_effect=start), \
              patch.object(tm.shutil, "which", side_effect=lambda name, **_: f"/usr/bin/{name}"), \
              patch.object(tm, "_installed_cli", return_value="/usr/bin/codex"), \
@@ -284,7 +288,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertIn(f"--bind {snapshot} {repo}", captured["script"])
         self.assertIn(f"--chdir {repo}", captured["script"])
         self.assertIn("--ro-bind / /", captured["script"])
-        self.assertIn(str(Path.home() / ".codex"), captured["script"])
+        self.assertIn(str(self.fake_home / ".codex"), captured["script"])
 
     def test_codex_work_attempt_keeps_its_own_sandbox(self):
         repo = self._repo()
