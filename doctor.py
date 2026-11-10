@@ -30,8 +30,8 @@ def _resolve_home(home: str | os.PathLike[str] | None = None) -> Path | None:
     return None
 
 
-def _modular_config() -> dict[str, Any]:
-    """Use task_manager's validated parser without duplicating config rules."""
+def _task_manager_module() -> Any:
+    """Load task_manager without duplicating its configuration discovery rules."""
     module = next((value for name, value in sys.modules.items()
                    if name == "task_manager" or name.endswith(".task_manager")), None)
     if module is None:
@@ -39,26 +39,37 @@ def _modular_config() -> dict[str, Any]:
             from . import task_manager as module
         except ImportError:
             import task_manager as module
+    return module
+
+
+def _modular_config() -> dict[str, Any]:
+    """Use task_manager's validated parser without duplicating config rules."""
+    module = _task_manager_module()
     return module._load_modular_config()
 
 
 def _check_config() -> dict[str, str]:
     try:
+        module = _task_manager_module()
+        path = module._config_path()
         cfg = _modular_config()
     except Exception as exc:
         return {"name": "config", "status": "fail", "hint": f"invalid cli-router.yaml: {exc}"}
-    if not cfg:
+    if path is None:
         return {"name": "config", "status": "ok",
                 "hint": "no cli-router.yaml (defaults)"}
     providers = cfg.get("providers") or {}
     disabled = sorted(c for c, v in providers.items() if v.get("enabled") is False)
     excluded = {c: len(v.get("excluded_models") or []) for c, v in sorted(providers.items())
                 if v.get("excluded_models")}
-    hint = (f"cli-router.yaml valid: providers disabled={disabled or 'none'}; "
+    legacy = path == module._plugin_dir() / "cli-router.yaml"
+    hint = (f"cli-router.yaml valid at {path}: providers disabled={disabled or 'none'}; "
             f"excluded models={excluded or 'none'}; jev={cfg.get('jev', 'default')}; "
             f"ai-memory={cfg.get('ai-memory', 'default')}; "
             f"independent-review={cfg.get('independent-review', 'default')}; "
             f"max-workers={cfg.get('max-workers', 'default')}")
+    if legacy:
+        hint += "; move it to the Hermes home to keep it across plugin updates"
     return {"name": "config", "status": "ok", "hint": hint}
 
 

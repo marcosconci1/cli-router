@@ -49,7 +49,7 @@ When `connection.backend` is `openrouter`, set `OPENROUTER_API_KEY` in this prof
 
 ## Per-install cli-router settings
 
-Settings that travel with the plugin installation, such as provider toggles, model exclusions, Jev, ai-memory, review and `max-workers`, live in `cli-router.yaml`. See [Configuration](configuration.md).
+Provider toggles, model exclusions, Jev, ai-memory, review and `max-workers` live in `<hermes-home>/cli-router.yaml`, outside the plugin directory. Reinstalling or updating the plugin does not touch the Hermes home. See [Configuration](configuration.md) for the `CLI_ROUTER_CONFIG` override and legacy fallback.
 
 ## Multiple profiles (several bots)
 

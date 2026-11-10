@@ -103,6 +103,51 @@ def test_malformed_config_is_reported(tmp_path, text):
             tm._load_modular_config()
 
 
+def test_config_path_prefers_existing_environment_override(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    plugin = tmp_path / "plugin"
+    override = tmp_path / "custom.yaml"
+    home.mkdir()
+    plugin.mkdir()
+    (home / "cli-router.yaml").write_text("cli-router: {}\n", encoding="utf-8")
+    (plugin / "cli-router.yaml").write_text("cli-router: {}\n", encoding="utf-8")
+    override.write_text("cli-router:\n  jev: false\n", encoding="utf-8")
+    monkeypatch.setenv("CLI_ROUTER_CONFIG", str(override))
+    with patch.object(tm, "_root", return_value=home), patch.object(tm, "_plugin_dir", return_value=plugin):
+        assert tm._config_path() == override
+        assert tm._load_modular_config() == {"jev": False}
+
+
+def test_missing_environment_override_raises_instead_of_falling_back(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    plugin = tmp_path / "plugin"
+    home.mkdir()
+    plugin.mkdir()
+    (home / "cli-router.yaml").write_text("cli-router: {}\n", encoding="utf-8")
+    (plugin / "cli-router.yaml").write_text("cli-router: {}\n", encoding="utf-8")
+    monkeypatch.setenv("CLI_ROUTER_CONFIG", str(tmp_path / "missing.yaml"))
+    with patch.object(tm, "_root", return_value=home), \
+         patch.object(tm, "_plugin_dir", return_value=plugin):
+        with pytest.raises(tm.ConfigurationError, match="CLI_ROUTER_CONFIG"):
+            tm._load_modular_config()
+
+
+def test_config_path_prefers_hermes_home_then_legacy_plugin_dir(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    plugin = tmp_path / "plugin"
+    home.mkdir()
+    plugin.mkdir()
+    legacy = plugin / "cli-router.yaml"
+    legacy.write_text("cli-router:\n  jev: false\n", encoding="utf-8")
+    monkeypatch.delenv("CLI_ROUTER_CONFIG", raising=False)
+    with patch.object(tm, "_root", return_value=home), patch.object(tm, "_plugin_dir", return_value=plugin):
+        assert tm._config_path() == legacy
+        home_config = home / "cli-router.yaml"
+        home_config.write_text("cli-router:\n  jev: true\n", encoding="utf-8")
+        assert tm._config_path() == home_config
+        assert tm._load_modular_config() == {"jev": True}
+
+
 def test_missing_file_keeps_legacy_memory_and_review_defaults(tmp_path):
     context = type("Context", (), {"get_config": lambda self, name, default=None:
                                    {"settings": {"ai-memory": "disabled"}}})()

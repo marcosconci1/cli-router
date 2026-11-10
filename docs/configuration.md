@@ -1,19 +1,19 @@
 # Configuration
 
-cli-router reads an optional per-install file, `cli-router.yaml`, that travels with the plugin installation instead of the Hermes profile.
+cli-router reads an optional `cli-router.yaml` from the Hermes home of the active profile. For a code profile, this is the profile directory under `~/.hermes/profiles/<name>/`. Set `CLI_ROUTER_CONFIG` to use a file at another path. A file beside the plugin is supported as a legacy fallback.
 
 ## Set it up
 
-1. Copy the example next to `task_manager.py` in the plugin directory (typically `~/.hermes/profiles/<profile>/plugins/cli-router`):
+1. Copy the example to the Hermes home of the active profile (for a code profile, typically `~/.hermes/profiles/<name>/`):
 
    ```sh
-   cp <plugin-dir>/cli-router.example.yaml <plugin-dir>/cli-router.yaml
+   cp <plugin-dir>/cli-router.example.yaml <hermes-home>/cli-router.yaml
    ```
 
 2. Edit the copy. Keep only the settings you want to change; omitted settings keep their Hermes value or default.
 3. Restart the gateway. A running gateway does not pick up edits.
 
-The file is gitignored in this repository, and an update keeps your `cli-router.yaml`.
+The Hermes home is outside the plugin directory, so reinstalling or updating the plugin does not touch this file. `CLI_ROUTER_CONFIG`, when set, must name an existing file and takes precedence. Otherwise cli-router uses `<hermes-home>/cli-router.yaml`, then the legacy `<plugin-dir>/cli-router.yaml` if present.
 
 ## Keys
 
@@ -30,7 +30,7 @@ All keys live under a single top-level `cli-router` mapping.
 
 ## Precedence
 
-1. `cli-router.yaml`
+1. The first available config file: `CLI_ROUTER_CONFIG`, then `<hermes-home>/cli-router.yaml`, then the legacy `<plugin-dir>/cli-router.yaml`.
 2. Hermes plugin settings (the legacy `routing.providers`, `routing.models`, `ai-memory` and `max-workers` keep working)
 3. Built-in defaults
 
@@ -81,7 +81,7 @@ With review off, the local acceptance checks still run. The task record shows th
 
 ## Check it
 
-`python3 <plugin-dir>/doctor.py` includes a `config` check. It reports `ok` with a summary of the active settings (or "no cli-router.yaml (defaults)"), and `fail` with the reason when the file is invalid. An invalid file raises a `ConfigurationError` at load time rather than being ignored. Unknown keys and malformed values are rejected.
+`python3 <plugin-dir>/doctor.py` includes a `config` check. It reports the active file path and a summary of its settings (or "no cli-router.yaml (defaults)"); a legacy plugin-directory file also gets a hint to move it to the Hermes home. It reports `fail` with the reason when the file is invalid. An invalid file raises a `ConfigurationError` at load time rather than being ignored. Unknown keys and malformed values are rejected.
 
 Only a YAML subset is supported: indented mappings, booleans, integers, quoted strings and simple lists. Anchors and block scalars are not supported.
 

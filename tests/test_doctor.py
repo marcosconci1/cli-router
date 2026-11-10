@@ -256,11 +256,18 @@ platform_toolsets:
                 self.assertTrue(res.get("ok"))
                 self.assertIsInstance(res.get("checks"), list)
 
-    def _config_check(self, text):
+    def _config_check(self, text, hermes_home=False):
         with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / "profile"
+            plugin = Path(temp) / "plugin"
+            home.mkdir()
+            plugin.mkdir()
             if text is not None:
-                (Path(temp) / "cli-router.yaml").write_text(text, encoding="utf-8")
-            with patch.object(task_manager, "_plugin_dir", return_value=Path(temp)):
+                target = home if hermes_home else plugin
+                (target / "cli-router.yaml").write_text(text, encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=True), \
+                 patch.object(task_manager, "_root", return_value=home), \
+                 patch.object(task_manager, "_plugin_dir", return_value=plugin):
                 return doctor._check_config()
 
     def test_config_check_no_file(self):
@@ -274,6 +281,14 @@ platform_toolsets:
         self.assertEqual(res["status"], "ok")
         for text in ("codex", "jev=False", "max-workers=3", "'codex': 2"):
             self.assertIn(text, res["hint"])
+        self.assertIn("plugin/cli-router.yaml", res["hint"])
+        self.assertIn("move it to the Hermes home", res["hint"])
+
+    def test_config_check_reports_hermes_home_path(self):
+        res = self._config_check("cli-router:\n  jev: false\n", hermes_home=True)
+        self.assertEqual(res["status"], "ok")
+        self.assertIn("profile/cli-router.yaml", res["hint"])
+        self.assertNotIn("move it to the Hermes home", res["hint"])
 
     def test_config_check_invalid_fails(self):
         res = self._config_check("cli-router:\n  max-workers: 9\n")
