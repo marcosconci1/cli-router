@@ -1,8 +1,10 @@
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -87,13 +89,40 @@ def test_register_tool_accepts_the_plugins_keywords():
 
 
 def test_real_hermes_validator_accepts_the_plugin():
-    result = _hermes_json(
-        "import json; "
-        "from pathlib import Path; "
-        "from hermes_cli.plugin_validate import validate_plugin_dir; "
-        "print(json.dumps(validate_plugin_dir(Path(__import__('sys').argv[1])).to_dict()))",
-        ROOT,
-    )
+    try:
+        git_root = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=ROOT, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        if Path(git_root).resolve() != ROOT.resolve():
+            raise subprocess.CalledProcessError(1, ["git", "rev-parse", "--show-toplevel"])
+        tracked = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, check=True,
+                                 capture_output=True).stdout.split(b"\0")
+    except (OSError, subprocess.CalledProcessError):
+        validator_root = ROOT
+        temp_context = None
+    else:
+        # The validator scans the directory, so validate only published files rather than local artifacts.
+        temp_context = tempfile.TemporaryDirectory()
+        validator_root = Path(temp_context.name)
+        for raw_path in tracked:
+            if not raw_path:
+                continue
+            relative = Path(os.fsdecode(raw_path))
+            source = ROOT / relative
+            if source.is_file():
+                target = validator_root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+    try:
+        result = _hermes_json(
+            "import json; "
+            "from pathlib import Path; "
+            "from hermes_cli.plugin_validate import validate_plugin_dir; "
+            "print(json.dumps(validate_plugin_dir(Path(__import__('sys').argv[1])).to_dict()))",
+            validator_root,
+        )
+    finally:
+        if temp_context is not None:
+            temp_context.cleanup()
     if "unavailable" in result:
         pytest.skip(f"Hermes validator is not importable: {result['unavailable']}")
     assert result["ok"], result["failures"] if "failures" in result else result["checks"]
