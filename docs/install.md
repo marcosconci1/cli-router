@@ -22,6 +22,8 @@ plugins:
     cli-router:
       allow_tool_override: true
       settings:
+        # Optional host-wide protected worker/reviewer concurrency (default 2, range 1–8).
+        max-workers: 2
         # Optional for ranking; required for retry handoff after a failed attempt.
         connection:
           backend: openrouter
@@ -87,6 +89,10 @@ scalars, and other advanced YAML features are not supported.
 ## Multiple profiles (several bots)
 
 Each profile or bot needs its own plugin install (or a symlink to one local clone), its own `plugins.enabled` entry, its own `platform_toolsets` entries, and its own `plugins.entries` settings. Restart the gateway once after updating the profiles; one restart covers them all. The plugin name is `cli-router`, while the toolset name is `cli_router` (underscore).
+
+`max-workers` is a host-wide limit for protected worker and reviewer attempts across repositories and profiles. It defaults to `2` and accepts integers from `1` through `8`. The setting can also be placed directly under the `cli-router` entry when the Hermes adapter provides that shape. All active cli-router installs on a host must use the same value: a different configured value waits until current workers finish, then becomes the limit for the next active group. Restart gateways after changing it; capacity changes do not interrupt running attempts. The shared host admission lock coordinates cli-router installs that use the same user cache; it does not coordinate other tools or users.
+
+Each repository keeps its existing task lock: shared for analysis and exclusive for changes. A same-repository lock conflict is reported as repository busy; a full host pool is reported as worker capacity reached; insufficient RAM, memory pressure, or missing telemetry is reported as a memory admission block. Workers retain their per-process systemd memory, swap, task-count, OOM, and runtime limits.
 
 ## First run
 
