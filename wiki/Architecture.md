@@ -17,14 +17,14 @@ A task moves through four stages. Each stage is a plain Python object, and the w
 
 **Fail open on quota.** A provider that rate limits its usage endpoint must not take the route away. The router keeps the last good entry and stays eligible. This trade favors a slightly stale quota reading over a dead route.
 
-**One worker at a time.** The router runs a single protected CLI worker. Concurrency would multiply sandbox surface and review ambiguity before it multiplies value.
+**Bounded workers.** The router runs a small pool of protected CLI workers (2 by default, 1 to 8 with `max-workers`). Different repositories run side by side. Changes to the same repository stay exclusive, so two workers never edit one checkout.
 
-**Fail closed on memory.** Cross attempt memory and the review gate run through ai-memory. When the memory stack is unreachable, the task reports `memory_blocked` instead of continuing blind. A task that cannot remember its failed approaches cannot retry them honestly.
+**Fail closed on memory.** With ai-memory enabled, cross attempt memory and the review gate run through it. When the memory stack is unreachable, the task reports `memory_blocked` instead of continuing blind. A task that cannot remember its failed approaches cannot retry them honestly.
 
 **Sandbox write controls.** The bubblewrap launcher mounts the host root read only, then permits writes to the change repository, selected Git metadata, CLI state, and shared `/tmp`. Hooks, config, and `HEAD` bind read only. Host reads remain possible except for masked paths, and network access is open. Codex implementation attempts use its native sandbox; see [the sandbox contract](../docs/sandbox.md).
 
 ## What the router refuses to do
 
 * It never runs a worker outside the sandbox.
-* It never counts a change as done without two passing reviews.
+* By default it never counts a change as done without two passing reviews. With `independent-review: false` the record says the review was skipped.
 * It never sends task data to a service beyond the configured provider CLIs, Jev, and ai-memory.
