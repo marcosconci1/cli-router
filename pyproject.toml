@@ -1,6 +1,6 @@
 [project]
 name = "cli-router"
-version = "0.5.0"
+version = "0.6.0"
 description = "Route coding tasks across Codex, Claude Code, Kimi and Antigravity with quota-aware rotation, sandboxed execution, and independent review"
 requires-python = ">=3.11"
 dependencies = []
