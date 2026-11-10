@@ -9,6 +9,57 @@ import task_manager as tm
 
 
 class ProviderToggleTests(unittest.TestCase):
+    def _submit_with_opencode_toggle(self, toggle):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            old_root = tm._root
+            tm._root = lambda: root / "home"
+            context = Mock()
+            context.get_config.side_effect = lambda key, default=None: (
+                {"routing.providers": toggle} if key == "routing.providers" else {}
+            )
+            route = {"cli": "codex", "model": "gpt-6-luna", "effort": "low"}
+            completed_git = subprocess.CompletedProcess([], 0, stdout=str(repo.resolve()) + "\n")
+            try:
+                with patch.object(hermes_adapter, "_CONTEXT", context), \
+                     patch.object(tm.ai_memory_bridge, "verify_runtime"), \
+                     patch.object(tm, "_git_readonly", return_value=completed_git), \
+                     patch.object(tm, "_quota", return_value={"fresh": True, "cache": {}}), \
+                     patch.object(tm, "_subscriptions", return_value=[route]), \
+                     patch.object(tm, "_installed_models", return_value={}), \
+                     patch.object(tm, "_worker_capable", side_effect=lambda candidates: candidates), \
+                     patch.object(tm, "_jev_choose", return_value=[]), \
+                     patch.object(tm, "_free_models", return_value=[]) as free_models, \
+                     patch.object(tm, "_openrouter_credential") as credential, \
+                     patch.object(tm, "_openrouter_quota_available") as free_quota:
+                    result = tm.dispatch({"action": "submit", "repository": str(repo), "task": "inspect",
+                                          "mode": "analysis",
+                                          "acceptance_criteria": [{"type": "git_diff_clean"}]})
+                return result, free_models, credential, free_quota
+            finally:
+                tm._root = old_root
+
+    def test_unset_opencode_toggle_skips_free_fallback_without_warning(self):
+        result, free_models, credential, free_quota = self._submit_with_opencode_toggle({})
+        free_models.assert_not_called()
+        credential.assert_not_called()
+        free_quota.assert_not_called()
+        self.assertEqual(result.get("state"), "blocked", result.get("message") or result.get("error"))
+        self.assertFalse(any("OpenRouter" in warning for warning in result["route_warnings"]))
+
+    def test_explicitly_enabled_opencode_toggle_runs_free_fallback(self):
+        _result, free_models, _credential, _free_quota = self._submit_with_opencode_toggle({"opencode": True})
+        free_models.assert_called_once_with()
+
+    def test_explicitly_disabled_opencode_toggle_skips_free_fallback(self):
+        _result, free_models, credential, free_quota = self._submit_with_opencode_toggle({"opencode": False})
+        free_models.assert_not_called()
+        credential.assert_not_called()
+        free_quota.assert_not_called()
+
     def test_dotted_setting_is_read_through_adapter(self):
         ctx = Mock()
         ctx.get_config.return_value = {"claude": False, "kimi": True}
@@ -262,7 +313,8 @@ class ProviderToggleTests(unittest.TestCase):
 
     def test_submit_all_candidates_hidden_by_toggle_blocks(self):
         ctx = Mock()
-        ctx.get_config.return_value = {"routing.providers": {"codex": False, "claude": False}}
+        ctx.get_config.return_value = {"routing.providers": {"codex": False, "claude": False,
+                                                               "opencode": True}}
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             repo = root / "repo"
@@ -278,10 +330,11 @@ class ProviderToggleTests(unittest.TestCase):
                      patch.object(tm, "_subscriptions", return_value=[route]), \
                      patch.object(tm, "_installed_models", return_value={}), \
                      patch.object(tm, "_worker_capable", side_effect=lambda c: c), \
-                     patch.object(tm, "_free_models", return_value=[]), \
+                     patch.object(tm, "_free_models", return_value=[]) as free_models, \
                      patch.object(tm, "_git_readonly", return_value=completed_git):
                     result = tm.dispatch({"action": "submit", "repository": str(repo), "task": "some task",
                                           "mode": "analysis", "acceptance_criteria": [{"type": "git_diff_clean"}]})
+                free_models.assert_called_once_with()
                 self.assertEqual(result["state"], "blocked")
                 self.assertEqual(result["message"], "Jev found no suitable eligible route")
                 task_data = tm._read(result["task_id"])

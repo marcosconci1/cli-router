@@ -111,6 +111,7 @@ The Hermes contract tests use `~/.hermes/hermes-agent` by default. Set `HERMES_A
 * Hermes 0.22 or newer.
 * Linux with `bwrap` (bubblewrap), Git, and a systemd user manager (`systemd-run`).
 * At least one authenticated provider CLI, for example `codex`, `kimi`, `agy`, `claude`, or `opencode`.
+* The experimental OpenRouter free fallback is opt-in: set `providers.opencode.enabled: true` in `cli-router.yaml` to enable it. It is off by default and does not affect subscription routes when the setting is omitted.
 * On Ubuntu 24.04 and newer, AppArmor may restrict unprivileged user namespaces, which bubblewrap needs for the sandbox. The common fix is `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`; understand the security tradeoff before applying it. To persist it across reboots, place the setting in a file such as `/etc/sysctl.d/99-userns.conf` instead of running sysctl by hand each boot.
 * Optional: an authenticated ai-memory CLI and server (ai-memory 3.1.0 or newer) for cross attempt memory and the review gate. With `ai-memory: auto` (the default) the router uses it when available; `enabled` requires it and `disabled` runs without it.
 * Pointers: Jev ships as the hermes-jev Hermes plugin (install it the same way if retry handoff is wanted), and ai-memory needs an authenticated CLI and server per the ai-memory project's install documentation (https://github.com/akitaonrails/ai-memory).

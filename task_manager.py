@@ -3019,7 +3019,7 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         # scope, so Jev assesses every candidate before the worker starts.
         if pin_cli or pin_model:
             candidates = subscription_ranked
-        else:
+        elif _provider_toggles().get("opencode") is True:
             _transition(data, "fallback_routing", "fallback_routing_started",
                         "assessing the OpenRouter free fallback")
             try:
@@ -3045,6 +3045,8 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
             else:
                 route_warnings.append("OpenRouter free fallback has no eligible catalog models")
             candidates = subscription_ranked + free_candidates
+        else:
+            candidates = subscription_ranked
         openrouter_key = None if (pin_cli or pin_model) else locals().get("openrouter_key")
     except Exception as exc:
         repo_lock.close()

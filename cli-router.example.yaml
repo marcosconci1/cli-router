@@ -18,7 +18,8 @@ cli-router:
       enabled: true
       excluded_models: []
     opencode:
-      enabled: true
+      # Opt in to the experimental OpenRouter free fallback.
+      enabled: false
       excluded_models: []
   jev: true
   ai-memory: auto

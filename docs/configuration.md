@@ -21,7 +21,7 @@ All keys live under a single top-level `cli-router` mapping.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `providers.<cli>.enabled` | bool | `true` | Turns routing to that CLI on or off. CLIs: `codex`, `claude`, `kimi`, `agy`, `opencode`. |
+| `providers.<cli>.enabled` | bool | `true` | Turns subscription routing to that CLI on or off. For `opencode`, explicitly set `true` to opt in to the experimental OpenRouter free fallback; an unset toggle leaves subscription routing unchanged and keeps that fallback off. CLIs: `codex`, `claude`, `kimi`, `agy`, `opencode`. |
 | `providers.<cli>.excluded_models` | list of model IDs | empty | Exact model IDs excluded for that CLI only. Applies to routing, reviews and pins. Empty or absent excludes nothing. |
 | `jev` | bool | `true` | `false` uses deterministic ranking and progress-based handoff, with no Jev calls. |
 | `ai-memory` | `enabled`, `disabled` or `auto` | `auto` | `enabled` requires managed ai-memory, `disabled` runs standalone, `auto` uses it when available. |
