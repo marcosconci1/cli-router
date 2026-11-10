@@ -10,7 +10,7 @@ A task rarely fits inside one window. The CLI in use hits its limit in the middl
 
 ## The resolution
 
-cli-router makes the switch automatic and the review mandatory. It reads real usage windows, picks the CLI with room, runs the work in a sandbox, and holds every change until two independent reviews pass. The subscriptions wear out evenly, and every change carries a second opinion by construction.
+cli-router makes the switch automatic and, by default, the review mandatory. It reads real usage windows, picks the CLI with room, runs the work in a sandbox, and holds every change until two independent reviews pass. The review can be switched off in `cli-router.yaml`. The subscriptions wear out evenly, and every change carries a second opinion by construction.
 
 ## What this system refuses to do
 

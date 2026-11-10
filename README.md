@@ -15,7 +15,7 @@
 
 Developers who use AI coding CLIs manage several subscriptions at once. Each CLI has its own usage limit, and the limits reset on different schedules. Someone has to track them. When the CLI in use hits its limit in the middle of a task, the person switches tools by hand, restarts the task, and explains the context again. While one subscription is exhausted, the others sit idle.
 
-cli-router is a plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that takes over this work. You submit one task. The router reads live usage windows from every configured CLI, keeps a reserve, and picks the one with room. The chosen CLI runs with sandbox write controls and commits the result on your branch. The bubblewrap sandbox leaves host files readable except for masked paths, and network access remains open; see [the sandbox contract](docs/sandbox.md). Before the change counts as done, two distinct models in fresh contexts and separate disposable snapshots review it independently. Models may share a provider. A review that fails sends the task back with the required changes.
+cli-router is a plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that takes over this work. You submit one task. The router reads live usage windows from every configured CLI, keeps a reserve, and picks the one with room. The chosen CLI runs with sandbox write controls and commits the result on your branch. The bubblewrap sandbox leaves host files readable except for masked paths, and network access remains open; see [the sandbox contract](docs/sandbox.md). By default, before the change counts as done, two distinct models in fresh contexts and separate disposable snapshots review it independently. Models may share a provider. A review that fails sends the task back with the required changes.
 
 Work spreads across the installed accounts so no single account absorbs everything, within each provider's terms of service; tasks keep moving when a quota window closes, and every change lands with a second opinion recorded in the task history.
 
@@ -34,7 +34,7 @@ flowchart LR
 * Reads real usage windows from each provider, keeps a 20% reserve when usage is known, and never picks a route that is about to hit its limit.
 * Ranks candidates by a public coding benchmark index. No extra service needed.
 * Ranking works without Jev. Jev can rank with a live LLM call; when enabled it assesses retry handoffs. A per-install config can disable Jev and use deterministic ranking and progress-based retry continuation.
-* By default, two distinct models in fresh contexts and separate disposable snapshots review a change before it counts as done. A per-install config can skip model reviews while keeping local acceptance checks.
+* By default, two distinct models in fresh contexts and separate disposable snapshots review a change before it counts as done. The review can be switched off in `cli-router.yaml`; local acceptance checks still run and the task record shows the review as skipped.
 
 ## Quick start
 
@@ -89,12 +89,13 @@ Standalone runs invoke the CLI directly and reviews run without ledger confirmat
 Copy `cli-router.example.yaml` from the installed plugin directory to `cli-router.yaml` beside
 `task_manager.py`. The user file is preserved by updates and overrides only the settings it
 contains. It can control providers and exact per-CLI model exclusions, Jev, ai-memory, and
-independent review. See [the install guide](docs/install.md#per-install-cli-router-settings) for
+independent review, and the worker limit. See [Configuration](docs/configuration.md) for
 precedence, setup, and supported YAML syntax.
 
 ## Documentation
 
 * [Installation](docs/install.md)
+* [Configuration](docs/configuration.md)
 * [Quota behavior](docs/quota.md)
 * [The sandbox](docs/sandbox.md)
 * [Wiki: how it is built](wiki/Home.md)

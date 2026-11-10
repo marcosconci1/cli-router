@@ -49,48 +49,13 @@ When `connection.backend` is `openrouter`, set `OPENROUTER_API_KEY` in this prof
 
 ## Per-install cli-router settings
 
-For settings that should travel with the plugin installation instead of the Hermes profile, copy
-`<plugin-dir>/cli-router.example.yaml` to `<plugin-dir>/cli-router.yaml` and edit the copy. The
-plugin directory is typically `~/.hermes/profiles/<profile>/plugins/cli-router`. The updater
-preserves `cli-router.yaml`; it is gitignored in this repository. Restart the gateway after edits.
-
-```sh
-cp <plugin-dir>/cli-router.example.yaml <plugin-dir>/cli-router.yaml
-```
-
-```yaml
-cli-router:
-  providers:
-    codex:
-      enabled: true
-      excluded_models: [model-id]
-  jev: false
-  ai-memory: disabled
-  independent-review: true
-```
-
-The file's explicitly set provider `enabled`, `jev`, `ai-memory`, and `independent-review` values
-override their Hermes equivalents. Omitted values retain Hermes settings and existing defaults.
-Provider model exclusions are exact model IDs scoped to that CLI, and empty or omitted lists exclude
-nothing. They apply to normal routing, independent reviews, and routes pinned with `cli` or `model`.
-The legacy Hermes `routing.providers`, `routing.models`, and `cli-router.settings.ai-memory` settings
-continue to work when the corresponding new setting is absent.
-
-`jev: false` uses deterministic benchmark ranking and progress-based retry continuation without
-calling Jev, including during handoff; task warnings record that behavior. `independent-review: false`
-keeps local acceptance checks and records the independent review as skipped. It does not record a
-review pass. `ai-memory: disabled` runs standalone even if ai-memory is unavailable; `auto` remains
-the default and selects standalone mode when managed ai-memory is unavailable.
-
-The config accepts ordinary indented mappings, booleans, quoted strings, and simple model ID lists.
-It rejects unknown keys and malformed values with the config path and reason; YAML anchors, block
-scalars, and other advanced YAML features are not supported.
+Settings that travel with the plugin installation, such as provider toggles, model exclusions, Jev, ai-memory, review and `max-workers`, live in `cli-router.yaml`. See [Configuration](configuration.md).
 
 ## Multiple profiles (several bots)
 
 Each profile or bot needs its own plugin install (or a symlink to one local clone), its own `plugins.enabled` entry, its own `platform_toolsets` entries, and its own `plugins.entries` settings. Restart the gateway once after updating the profiles; one restart covers them all. The plugin name is `cli-router`, while the toolset name is `cli_router` (underscore).
 
-`max-workers` is a host-wide limit for protected worker and reviewer attempts across repositories and profiles. It defaults to `2` and accepts integers from `1` through `8`. The setting can also be placed directly under the `cli-router` entry when the Hermes adapter provides that shape. All active cli-router installs on a host must use the same value: a different configured value waits until current workers finish, then becomes the limit for the next active group. Restart gateways after changing it; capacity changes do not interrupt running attempts. The shared host admission lock coordinates cli-router installs that use the same user cache; it does not coordinate other tools or users.
+`max-workers` is a host-wide limit for protected worker and reviewer attempts across repositories and profiles. It defaults to `2` and accepts integers from `1` through `8`; set it in `cli-router.yaml` (see [Configuration](configuration.md)) or, as before, in the Hermes plugin settings. All active cli-router installs on a host must use the same value: a different configured value waits until current workers finish, then becomes the limit for the next active group. Restart gateways after changing it; capacity changes do not interrupt running attempts. The shared host admission lock coordinates cli-router installs that use the same user cache; it does not coordinate other tools or users.
 
 Each repository keeps its existing task lock: shared for analysis and exclusive for changes. A same-repository lock conflict is reported as repository busy; a full host pool is reported as worker capacity reached; insufficient RAM, memory pressure, or missing telemetry is reported as a memory admission block. Workers retain their per-process systemd memory, swap, task-count, OOM, and runtime limits.
 
