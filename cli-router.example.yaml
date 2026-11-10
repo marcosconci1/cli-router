@@ -1,0 +1,23 @@
+# Copy this file to cli-router.yaml beside the installed plugin's task_manager.py.
+# The per-install file overrides only the settings you specify; absent settings
+# keep their Hermes configuration or cli-router default.
+cli-router:
+  providers:
+    codex:
+      enabled: true
+      excluded_models: []
+    claude:
+      enabled: true
+      excluded_models: []
+    kimi:
+      enabled: true
+      excluded_models: []
+    agy:
+      enabled: true
+      excluded_models: []
+    opencode:
+      enabled: true
+      excluded_models: []
+  jev: true
+  ai-memory: auto
+  independent-review: true

@@ -30,6 +30,18 @@ def _resolve_home(home: str | os.PathLike[str] | None = None) -> Path | None:
     return None
 
 
+def _modular_config() -> dict[str, Any]:
+    """Use task_manager's validated parser without duplicating config rules."""
+    module = next((value for name, value in sys.modules.items()
+                   if name == "task_manager" or name.endswith(".task_manager")), None)
+    if module is None:
+        try:
+            from . import task_manager as module
+        except ImportError:
+            import task_manager as module
+    return module._load_modular_config()
+
+
 def _check_bubblewrap() -> dict[str, str]:
     name = "bubblewrap"
     bwrap_path = shutil.which("bwrap") or shutil.which("bubblewrap")
@@ -107,7 +119,13 @@ def _check_cli(name: str) -> dict[str, str]:
 
 def _check_ai_memory() -> dict[str, str]:
     mode = "auto"
-    if hermes_adapter.has_context():
+    try:
+        modular = _modular_config()
+        mode = modular.get("ai-memory", mode)
+    except Exception as exc:
+        return {"name": "ai-memory", "status": "fail",
+                "hint": f"invalid cli-router.yaml configuration ({type(exc).__name__})"}
+    if "ai-memory" not in modular and hermes_adapter.has_context():
         try:
             cfg = hermes_adapter.get_config("cli-router", {})
             if isinstance(cfg, dict):
@@ -140,6 +158,13 @@ def _check_ai_memory() -> dict[str, str]:
 
 
 def _check_jev_connection() -> dict[str, str]:
+    try:
+        if _modular_config().get("jev") is False:
+            return {"name": "jev-connection", "status": "skip",
+                    "hint": "Jev disabled by cli-router.yaml; deterministic ranking and handoff continuation are active"}
+    except Exception as exc:
+        return {"name": "jev-connection", "status": "fail",
+                "hint": f"invalid cli-router.yaml configuration ({type(exc).__name__})"}
     if not hermes_adapter.has_context():
         return {
             "name": "jev-connection",
