@@ -28,3 +28,5 @@ cli-router:
   independent-review: true
   # Concurrent workers across repositories, an integer from 1 to 8.
   max-workers: 2
+  # Exclude a subscription route when any window has this percent or less remaining; default 30.
+  quota-reserve: 30

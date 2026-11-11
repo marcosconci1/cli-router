@@ -11,7 +11,7 @@ The router picks routes from providers that actually have quota room. This page 
 ## How the router treats the numbers
 
 * Usage windows are rolling percentages, not absolute counts. Anthropic's endpoint reports only percentages.
-* The router keeps a 20% reserve on every provider when usage is known, and never picks a route that is about to hit its limit.
+* `quota-reserve` sets the percentage reserve (default `30`); a subscription route is excluded when any percentage window has that percent or less remaining.
 * A fetch that fails keeps the last good entry. Aggressive 429 handling is fail open: the route stays eligible instead of disappearing.
 * Until a first Claude fetch succeeds, Claude routes stay eligible with an "unknown quota" reason.
 

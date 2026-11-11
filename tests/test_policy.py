@@ -58,16 +58,58 @@ class PolicyTests(unittest.TestCase):
 
     def test_window_past_its_reset_time_no_longer_limits(self):
         past, future = "2026-01-01T00:00:00+00:00", "2999-01-01T00:00:00Z"
-        self.assertEqual(tm._remaining({"windows": [{"used_percent": 100, "reset_at": past},
-                                                    {"used_percent": 48, "reset_at": future}]}),
-                         (True, "quota available"))
-        self.assertEqual(tm._remaining({"windows": [{"used_percent": 100, "reset_at": future}]}),
-                         (False, "quota exhausted"))
-        self.assertEqual(tm._remaining({"windows": [{"used_percent": 85, "reset_at": future}]}),
-                         (False, "quota near limit (20% reserve)"))
-        # An unparseable reset time is not evidence of a reset.
-        self.assertEqual(tm._remaining({"windows": [{"used_percent": 100, "reset_at": "later"}]}),
-                         (False, "quota exhausted"))
+        with patch.object(tm, "_load_modular_config", return_value={"quota-reserve": 20}):
+            self.assertEqual(tm._remaining({"windows": [{"used_percent": 100, "reset_at": past},
+                                                        {"used_percent": 48, "reset_at": future}]}),
+                             (True, "quota available"))
+            self.assertEqual(tm._remaining({"windows": [{"used_percent": 100, "reset_at": future}]}),
+                             (False, "quota exhausted"))
+            self.assertEqual(tm._remaining({"windows": [{"used_percent": 85, "reset_at": future}]}),
+                             (False, "quota near limit (20% reserve)"))
+            # An unparseable reset time is not evidence of a reset.
+            self.assertEqual(tm._remaining({"windows": [{"used_percent": 100, "reset_at": "later"}]}),
+                             (False, "quota exhausted"))
+
+    def test_quota_reserve_configurable_boundaries_and_default(self):
+        windows = lambda remaining: {"windows": [{"used_percent": 100 - remaining}]}
+        with patch.object(tm, "_load_modular_config", return_value={"quota-reserve": 20}):
+            self.assertEqual(tm._remaining(windows(21)), (True, "quota available"))
+            self.assertEqual(tm._remaining(windows(20)),
+                             (False, "quota near limit (20% reserve)"))
+        with patch.object(tm, "_load_modular_config", return_value={}):
+            self.assertEqual(tm._remaining(windows(21)),
+                             (False, "quota near limit (30% reserve)"))
+            self.assertEqual(tm._remaining(windows(31)), (True, "quota available"))
+        with patch.object(tm, "_load_modular_config", return_value={"quota-reserve": 0}):
+            self.assertEqual(tm._remaining(windows(1)), (True, "quota available"))
+            self.assertEqual(tm._remaining(windows(0)), (False, "quota exhausted"))
+
+    def test_quota_reserve_validation_and_config_precedence(self):
+        import tempfile
+        for value in (100, -1, True, 1.5):
+            with self.subTest(value=value), self.assertRaises(tm.ConfigurationError):
+                tm._validate_modular_config({"cli-router": {"quota-reserve": value}}, Path("cli-router.yaml"))
+
+        class Context:
+            def get_config(self, name, default=None):
+                return {"quota-reserve": 18}
+
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "cli-router.yaml"
+            config.write_text("cli-router:\n  quota-reserve: 42\n", encoding="utf-8")
+            with patch.dict("os.environ", {"CLI_ROUTER_CONFIG": str(config)}), \
+                 patch.object(tm.hermes_adapter, "has_context", return_value=True), \
+                 patch.object(tm.hermes_adapter, "get_config", side_effect=Context().get_config):
+                self.assertEqual(tm._quota_reserve(), 42)
+        with patch.object(tm, "_load_modular_config", return_value={}), \
+             patch.object(tm.hermes_adapter, "has_context", return_value=True), \
+             patch.object(tm.hermes_adapter, "get_config", return_value={"settings": {"quota-reserve": 18}}):
+            self.assertEqual(tm._quota_reserve(), 18)
+
+    def test_bad_config_uses_safe_default_for_quota_filter(self):
+        with patch.object(tm, "_load_modular_config", side_effect=tm.ConfigurationError("bad config")):
+            self.assertEqual(tm._remaining({"windows": [{"used_percent": 75}]}),
+                             (False, "quota near limit (30% reserve)"))
 
     def test_claude_record_applies_reserve_and_fails_open_without_windows(self):
         installed = {"codex": {}, "agy": {}, "kimi": {}, "claude": {"claude-sonnet-5-5": ["medium"]}}
@@ -81,11 +123,12 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual([r["quota_reason"] for r in unknown], [f"{tm.CLAUDE_QUOTA_UNKNOWN} (http-429)"])
 
     def test_quota_reserve_checks_each_percentage_window(self):
-        for used in (80, 90, 99, 99.9):
-            self.assertFalse(tm._remaining({"windows": [{"used_percent": used}]})[0])
-        self.assertTrue(tm._remaining({"windows": [{"used_percent": 79.9}]})[0])
-        self.assertFalse(tm._remaining({"windows": [
-            {"used_percent": 20}, {"used_percent": 95}]})[0])
+        with patch.object(tm, "_load_modular_config", return_value={"quota-reserve": 20}):
+            for used in (80, 90, 99, 99.9):
+                self.assertFalse(tm._remaining({"windows": [{"used_percent": used}]})[0])
+            self.assertTrue(tm._remaining({"windows": [{"used_percent": 79.9}]})[0])
+            self.assertFalse(tm._remaining({"windows": [
+                {"used_percent": 20}, {"used_percent": 95}]})[0])
         self.assertTrue(tm._remaining({"windows": [{"remaining": 1}]})[0])
 
     def test_model_failures_advance_but_account_failures_stop(self):
@@ -1138,7 +1181,8 @@ class PolicyTests(unittest.TestCase):
                          "used_percent": 78, "remaining": 11, "limit": 50}],
             "details": ["Account wallet reports shared account credits"],
         }}}}
-        with patch.object(tm, "_quota_plugin", return_value=types.SimpleNamespace()), \
+        with patch.object(tm, "_load_modular_config", return_value={"quota-reserve": 20}), \
+             patch.object(tm, "_quota_plugin", return_value=types.SimpleNamespace()), \
              patch.dict("sys.modules", {"_hermes_code_quota_plugin.quota_providers.openrouter": package}):
             self.assertEqual(tm._openrouter_quota_available(quota, "selected-key"), (True, "quota available"))
             self.assertFalse(tm._openrouter_quota_available(quota, "other-key")[0])

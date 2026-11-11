@@ -47,6 +47,8 @@ platform_toolsets:
 
 Provider toggles, model exclusions, Jev, ai-memory, review and `max-workers` live in `<hermes-home>/cli-router.yaml`, outside the plugin directory. Reinstalling or updating the plugin does not touch the Hermes home. See [Configuration](configuration.md) for the `CLI_ROUTER_CONFIG` override and legacy fallback.
 
+`quota-reserve` also lives in `cli-router.yaml` (default `30`, range `0` to `99`). A subscription route is excluded when any percentage window has the configured percent or less remaining. The same setting can be supplied through the plugin's Hermes settings.
+
 ## Multiple profiles (several bots)
 
 Each profile or bot needs its own plugin install (or a symlink to one local clone), its own `plugins.enabled` entry (`--enable`), its own `platform_toolsets` entries if the profile saves an explicit list, and its own `plugins.entries` settings. Restart the gateway once after updating the profiles; one restart covers them all. The plugin name is `cli-router`, while the toolset name is `cli_router` (underscore).
