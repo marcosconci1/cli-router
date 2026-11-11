@@ -4,6 +4,8 @@
 
 - submit accepts an optional short label, shown in status and wait.
 - status and wait now show which CLI and model run the task (`route`, `routes_used`)
+- hermes cli-router setup: one-command first run (creates cli-router.yaml, checks the machine); install is now two commands.
+- doctor no longer reports a fresh install as failing plugin-wiring when no platform_toolsets list exists.
 
 ## 0.6.0
 

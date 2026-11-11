@@ -269,6 +269,7 @@ def _check_plugin_wiring(home: str | os.PathLike[str] | None = None) -> dict[str
     in_enabled = False
     in_toolsets = False
     toolset_found = False
+    toolset_entries = False
     for raw_line in lines:
         line = without_comment(raw_line)
         if not line.strip():
@@ -293,6 +294,8 @@ def _check_plugin_wiring(home: str | os.PathLike[str] | None = None) -> dict[str
                 if entry == "cli-router":
                     plugin_enabled = True
 
+        if in_toolsets:
+            toolset_entries = True
         if in_toolsets and re.search(r"(?<![A-Za-z0-9_-])cli_router(?![A-Za-z0-9_-])", content):
             toolset_found = True
 
@@ -302,6 +305,9 @@ def _check_plugin_wiring(home: str | os.PathLike[str] | None = None) -> dict[str
             "status": "fail",
             "hint": "cli-router is not in plugins.enabled; add it to the active profile's config.yaml",
         }
+    if not toolset_entries:
+        return {"name": name, "status": "ok",
+                "hint": "plugin enabled; cli_router toolset is on by default (no saved platform_toolsets)"}
     if not toolset_found:
         return {
             "name": name,

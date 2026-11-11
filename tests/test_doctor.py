@@ -193,6 +193,9 @@ platform_toolsets:
 """,
                 "fail",
             ),
+            "enabled only": ("plugins:\n  enabled:\n    - cli-router\n", "ok"),
+            "empty platform_toolsets": (
+                "plugins:\n  enabled:\n    - cli-router\nplatform_toolsets: {}\n", "ok"),
             "inline toolset list": (
                 """plugins:
   enabled:
