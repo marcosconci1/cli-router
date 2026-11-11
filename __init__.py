@@ -6,12 +6,12 @@ from typing import Any
 
 TASK_SCHEMA = {
     "name": "cli_router",
-    "description": "Route a coding task to a CLI (Codex, Claude Code, Kimi and Antigravity), then wait for, inspect, or cancel it. After submit, use wait repeatedly in the same turn until terminal state; never use terminal sleep timers or repository polling. Every task includes independent external verification and at most one repair cycle. Submit requires at least one structured acceptance criterion.",
+    "description": "Route a coding task to a CLI (Codex, Claude Code, Kimi and Antigravity), then wait for, inspect, or cancel it. Recover reaps dead tasks scoped to a repository and does not require an owner token. After submit, use wait repeatedly in the same turn until terminal state; never use terminal sleep timers or repository polling. Every task includes independent external verification and at most one repair cycle. Submit requires at least one structured acceptance criterion.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["submit", "wait", "status", "cancel", "doctor", "diagnose"]},
-            "repository": {"type": "string", "description": "Existing local Git repository path; required for submit."},
+            "action": {"type": "string", "enum": ["submit", "wait", "status", "cancel", "doctor", "diagnose", "recover"]},
+            "repository": {"type": "string", "description": "Existing local Git repository path; required for submit and recover."},
             "task": {"type": "string", "description": "Task for the CLI worker; required for submit."},
             "mode": {"type": "string", "enum": ["analysis", "change"]},
             "label": {"type": "string", "description": "Optional short name for the task, up to 60 characters, shown in status and wait. Do not put secrets or prompts in it."},

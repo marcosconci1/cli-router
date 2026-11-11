@@ -55,6 +55,33 @@ def _hermes_json(script, *args):
     return {"unavailable": errors[-1] if errors else "no Python interpreter found"}
 
 
+def test_recover_is_exposed_as_tokenless_repository_scoped_action(monkeypatch):
+    package_name = "cli_router_recover_contract"
+    spec = importlib.util.spec_from_file_location(
+        package_name, ROOT / "__init__.py", submodule_search_locations=[str(ROOT)]
+    )
+    package = importlib.util.module_from_spec(spec)
+    sys.modules[package_name] = package
+    spec.loader.exec_module(package)
+
+    assert "recover" in package.TASK_SCHEMA["parameters"]["properties"]["action"]["enum"]
+    assert "recover" in package.TASK_SCHEMA["parameters"]["properties"]["repository"]["description"]
+
+    from importlib import import_module
+    task_manager = import_module(f"{package_name}.task_manager")
+    forwarded = {}
+
+    def fake_dispatch(args):
+        forwarded.update(args)
+        return {"ok": True}
+
+    monkeypatch.setattr(task_manager, "dispatch", fake_dispatch)
+    result = json.loads(package._cli_router({"action": "recover", "repository": str(ROOT)}))
+
+    assert result == {"ok": True}
+    assert forwarded == {"action": "recover", "repository": str(ROOT)}
+
+
 def test_register_tool_accepts_the_plugins_keywords():
     result = _hermes_json(
         "import inspect, json; "
