@@ -121,9 +121,15 @@ class DoctorTests(unittest.TestCase):
             res = doctor._check_jev_connection()
             self.assertEqual(res["status"], "skip")
 
+        connection = {"backend": "openrouter", "model": "typesafe/jev-1.14"}
+
+        class PluginContext:
+            def get_config(self, key, default=None):
+                return connection if key == "connection" else default
+
+        ctx = PluginContext()
+
         # In Hermes, configured, but Jev service not loaded in-process
-        ctx = MagicMock()
-        ctx.get_config.return_value = {"settings": {"connection": {"backend": "openrouter", "model": "typesafe/jev-1.14"}}}
         with patch.object(hermes_adapter, "_CONTEXT", ctx), \
              patch.object(hermes_adapter, "_jev_service_cls", side_effect=RuntimeError("Jev plugin is not loaded")):
             res = doctor._check_jev_connection()
@@ -138,12 +144,17 @@ class DoctorTests(unittest.TestCase):
             self.assertEqual(res["status"], "ok")
             self.assertEqual(res["hint"], "Jev ranking active for openrouter/typesafe/jev-1.14")
 
-        # In Hermes, missing
-        ctx.get_config.return_value = {}
-        with patch.object(hermes_adapter, "_CONTEXT", ctx):
-            res = doctor._check_jev_connection()
-            self.assertEqual(res["status"], "warn")
-            self.assertIn("deterministic fallback ranking in use", res["hint"])
+        # In Hermes, missing or malformed connection
+        for config in (None, {}, {"backend": "openrouter"}, {"model": "typesafe/jev-1.14"}, "invalid"):
+            with self.subTest(config=config):
+                class ConfigContext:
+                    def get_config(self, key, default=None):
+                        return config if key == "connection" else default
+
+                with patch.object(hermes_adapter, "_CONTEXT", ConfigContext()):
+                    res = doctor._check_jev_connection()
+                self.assertEqual(res["status"], "warn")
+                self.assertIn("deterministic fallback ranking in use", res["hint"])
 
     def test_modular_config_controls_doctor_memory_and_jev_diagnostics(self):
         with patch.object(doctor, "_modular_config", return_value={"ai-memory": "disabled", "jev": False}), \
