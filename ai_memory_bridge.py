@@ -41,6 +41,10 @@ _HARNESS = {"codex": "codex", "opencode": "opencode", "kimi": "kimi", "claude": 
 class AiMemoryError(RuntimeError):
     """A task cannot safely advance without its ai-memory baton."""
 
+    def __init__(self, *args: object, code: str | None = None) -> None:
+        super().__init__(*args)
+        self.code = code
+
 
 def workstream_name(task_id: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{32}", task_id or ""):
@@ -51,7 +55,7 @@ def workstream_name(task_id: str) -> str:
 def _cli() -> str:
     cli = shutil.which("ai-memory")
     if not cli:
-        raise AiMemoryError("ai-memory CLI is unavailable")
+        raise AiMemoryError("ai-memory CLI is unavailable", code="AIM_CLI_MISSING")
     return cli
 
 
@@ -63,7 +67,7 @@ def _parent_env() -> dict[str, str]:
     }
     env = {key: value for key, value in os.environ.items() if key in allowed}
     if not env.get("AI_MEMORY_AUTH_TOKEN"):
-        raise AiMemoryError("ai-memory authentication is unavailable in the task runner")
+        raise AiMemoryError("ai-memory authentication is unavailable in the task runner", code="AIM_AUTH_MISSING")
     return env
 
 
@@ -73,9 +77,9 @@ def _command(args: list[str], cwd: Path, timeout: int = 20) -> str:
                                 capture_output=True, text=True, timeout=timeout,
                                 check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise AiMemoryError(f"ai-memory request failed ({type(exc).__name__})") from None
+        raise AiMemoryError(f"ai-memory request failed ({type(exc).__name__})", code="AIM_CHECK_FAILED") from None
     if result.returncode:
-        raise AiMemoryError("ai-memory request failed; task baton was not confirmed")
+        raise AiMemoryError("ai-memory request failed; task baton was not confirmed", code="AIM_CHECK_FAILED")
     return result.stdout
 
 
@@ -86,13 +90,13 @@ def verify_runtime(cwd: Path) -> None:
                                 capture_output=True, text=True, timeout=10,
                                 check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise AiMemoryError(f"ai-memory version check failed ({type(exc).__name__})") from None
+        raise AiMemoryError(f"ai-memory version check failed ({type(exc).__name__})", code="AIM_CHECK_FAILED") from None
     match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", result.stdout + result.stderr)
     if result.returncode or not match or tuple(map(int, match.groups())) < MIN_VERSION:
-        raise AiMemoryError("ai-memory 3.1.0 or newer is required for managed workstreams")
+        raise AiMemoryError("ai-memory 3.1.0 or newer is required for managed workstreams", code="AIM_VERSION_UNSUPPORTED")
     status = _command(["status"], cwd)
     if not re.search(r"(?m)^ai-memory \d+\.\d+\.\d+(?:-[\w.-]+)? \(server\)\s*$", status):
-        raise AiMemoryError("ai-memory server health/authentication is unavailable")
+        raise AiMemoryError("ai-memory server health/authentication is unavailable", code="AIM_SERVER_UNAVAILABLE")
 
 
 def find_workstream(cwd: Path, name: str) -> str:

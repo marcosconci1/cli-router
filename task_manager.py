@@ -69,11 +69,12 @@ except ImportError:
     except ImportError:  # pragma: no cover - fail closed at dispatch
         ai_memory_bridge = None
 try:
-    from . import diagnostic_journal, doctor, hermes_adapter, quota, route_benchmark, worker_resources
+    from . import diagnostic_journal, doctor, hermes_adapter, problems, quota, route_benchmark, worker_resources
 except ImportError:
     import diagnostic_journal
     import doctor
     import hermes_adapter
+    import problems
     import quota
     import route_benchmark
     import worker_resources
@@ -320,6 +321,45 @@ def _journal(kind: str, payload: dict[str, Any], data: dict[str, Any] | None = N
             if message not in warnings:
                 warnings.append(message)
             data["route_warnings"] = warnings
+
+
+def _record_degraded(data: dict[str, Any], code: str, detail: Any, *, chosen: bool | None = None) -> None:
+    """Record a chosen component's failure once per code; unchosen components stay silent."""
+    component = problems.CODES[code]["component"]
+    if not (problems.is_chosen(component) if chosen is None else chosen):
+        return
+    if problems.add(data, problems.make(code, detail)):
+        _journal("degraded", {"code": code, "component": component, "task_id": data.get("task_id")}, data)
+
+
+def _jev_problem(message: str, code: str) -> RuntimeError:
+    error = RuntimeError(message)
+    error.problem_code = code  # type: ignore[attr-defined]
+    return error
+
+
+def _record_jev_degraded(task_id: str | None, exc: BaseException,
+                         in_memory_data: dict[str, Any] | None = None) -> None:
+    try:
+        data = in_memory_data if in_memory_data is not None else (_read(task_id) if task_id else None)
+        if not isinstance(data, dict) or not problems.is_chosen("jev"):
+            return
+        code = getattr(exc, "problem_code", None)
+        if code not in problems.CODES:
+            text = str(exc).lower()
+            code = ("JEV_PLUGIN_NOT_LOADED" if "not loaded" in text or "context is unavailable" in text
+                    else "JEV_REQUEST_FAILED")
+        _record_degraded(data, code, str(exc), chosen=True)
+        if in_memory_data is None:
+            _write(data["task_id"], data)
+    except Exception:
+        pass
+
+
+def _record_attempt_unconfirmed(data: dict[str, Any], stderr: Any) -> None:
+    lines = [line.strip() for line in str(stderr or "").splitlines() if line.strip()]
+    _record_degraded(data, "AIM_ATTEMPT_UNCONFIRMED",
+                     lines[-1] if lines else "ai-memory did not confirm this attempt")
 
 
 def _journal_startup() -> None:
@@ -1086,7 +1126,7 @@ def _jev_run(service, request: dict[str, Any], failure: str) -> dict[str, Any]:
         result = service.run(request)
         if result.get("ok") is True:
             return result
-    raise RuntimeError(failure)
+    raise _jev_problem(failure, "JEV_REQUEST_FAILED")
 
 
 def _fallback_rank(candidates: list[dict[str, Any]], index: dict[str, Any],
@@ -1138,6 +1178,7 @@ def _jev_choose(task: str, candidates: list[dict[str, Any]], *, one_at_a_time: b
                                   _position=_position, task_id=task_id, in_memory_data=in_memory_data)
     except Exception as exc:
         _record_route_warning(task_id, purpose, exc, in_memory_data=in_memory_data)
+        _record_jev_degraded(task_id, exc, in_memory_data)
         ranked = _fallback_rank(candidates, _benchmark_index(), task)
         if purpose == "review":
             seen, unique = set(), []
@@ -1150,6 +1191,14 @@ def _jev_choose(task: str, candidates: list[dict[str, Any]], *, one_at_a_time: b
         return ranked
 
 
+def _require_pinned_connection(conn: Any) -> None:
+    message = "Jev is not configured for the pinned OpenRouter model"
+    if not isinstance(conn, dict) or not conn.get("backend") or not conn.get("model"):
+        raise _jev_problem(message, "JEV_NOT_CONFIGURED")
+    if conn.get("backend") != "openrouter" or conn.get("model") != "typesafe/jev-1.14":
+        raise _jev_problem(message, "JEV_MODEL_UNSUPPORTED")
+
+
 def _jev_choose_pinned(task: str, candidates: list[dict[str, Any]], *, one_at_a_time: bool = False,
                        purpose: str = "work", _position: int = 0, task_id: str | None = None,
                        in_memory_data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -1157,9 +1206,7 @@ def _jev_choose_pinned(task: str, candidates: list[dict[str, Any]], *, one_at_a_
     # This route is pinned to the Code profile's OpenRouter-backed Jev model.
     # Configuration/request failures are reported by _jev_choose before fallback.
     conn = hermes_adapter.get_config("connection", {})
-    if (conn.get("backend") != "openrouter" or
-            conn.get("model") != "typesafe/jev-1.14"):
-        raise RuntimeError("Jev is not configured for the pinned OpenRouter model")
+    _require_pinned_connection(conn)
     index = _benchmark_index()
     categories = route_benchmark.detect_design_categories(task)
     if one_at_a_time:
@@ -1237,8 +1284,7 @@ def _jev_handoff(task: str, previous_attempt: dict[str, Any], verification: dict
                 or bool((verification or {}).get("changed_files")))
     service = hermes_adapter.jev_service()
     connection = hermes_adapter.get_config("connection", {})
-    if connection.get("backend") != "openrouter" or connection.get("model") != "typesafe/jev-1.14":
-        raise RuntimeError("Jev is not configured for the pinned OpenRouter model")
+    _require_pinned_connection(connection)
     # An attempt that changed nothing left no work to continue: the task text is the whole checkpoint.
     made_progress = bool(previous_attempt.get("changed_files")) or bool((verification or {}).get("changed_files"))
     state = {
@@ -1267,6 +1313,8 @@ def _jev_handoff(task: str, previous_attempt: dict[str, Any], verification: dict
         except Exception as exc:
             last_error = exc
     else:
+        if str(last_error) == "Jev handoff assessment failed":
+            last_error = _jev_problem(str(last_error), "JEV_REQUEST_FAILED")
         raise last_error
     answer = result.get("answers", {}).get("handoff", {}).get("choice")
     _record_jev_answer(task_id, "handoff", answer, ["continue", "stop"])
@@ -2600,9 +2648,12 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                         task_id, repo, task, criteria, candidates, candidate, openrouter_key,
                         attempt_index + 1, memory_mode=memory_mode)
                     latest_record = _read(task_id) or {}
-                    for key in ("events", "route_warnings"):
+                    for key in ("events", "route_warnings", "degraded"):
                         if key in latest_record:
                             data[key] = latest_record[key]
+                    for review in external.get("reviews") or []:
+                        if isinstance(review, dict) and review.get("worker_outcome") == "memory_blocked":
+                            _record_attempt_unconfirmed(data, review.get("attempt_stderr"))
                     last_checks["external"] = external
                     reviewed_clis.update(
                         review["route"]["cli"] for review in external.get("reviews") or []
@@ -2648,6 +2699,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                               "reason": _safe_text(outcome.get("reason", ""), 800),
                               "ai_memory": memory_ref}
             if outcome_kind == "memory_blocked":
+                _record_attempt_unconfirmed(data, outcome.get("stderr"))
                 attempt_record["attempt_stderr"] = _safe_text(outcome.get("stderr") or "", 500)
                 attempt_record["attempt_stdout"] = _safe_text(outcome.get("stdout") or "", 500)
             attempts.append(attempt_record)
@@ -2712,6 +2764,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                         if message not in warnings:
                             warnings.append(message)
                         data["route_warnings"] = warnings
+                        _record_jev_degraded(task_id, exc, data)
                         proceed = (bool(attempts[-1].get("changed_files"))
                                    or bool((last_checks or {}).get("changed_files")))
                     data["ai_memory"].update(state="handoff_assessed",
@@ -2816,6 +2869,8 @@ def _status_view(data: dict[str, Any], include_history: bool = False) -> dict[st
             add_route("review", review.get("route") if isinstance(review, dict) else None)
     if routes_used:
         result["routes_used"] = routes_used
+    if isinstance(data.get("degraded"), list) and data["degraded"]:
+        result["degraded"] = data["degraded"]
     if data.get("state") in _ACTIVE_STATES:
         result["next_action"] = {
             "action": "wait", "task_id": data.get("task_id"), "timeout_seconds": 60,
@@ -3026,15 +3081,20 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
             data["ai_memory"] = {"mode": memory_mode}
             if ai_memory_bridge is None:
                 raise RuntimeError("ai-memory bridge module is unavailable")
-            ai_memory_bridge.verify_runtime(repo)
+            try:
+                ai_memory_bridge.verify_runtime(repo)
+            except Exception as exc:
+                _record_degraded(data, problems.classify_ai_memory_error(exc), str(exc), chosen=True)
+                raise
         else:
             try:
                 if ai_memory_bridge is None:
                     raise RuntimeError("ai-memory bridge module is unavailable")
                 ai_memory_bridge.verify_runtime(repo)
                 memory_mode = "managed"
-            except Exception:
+            except Exception as exc:
                 memory_mode = "standalone"
+                _record_degraded(data, problems.classify_ai_memory_error(exc), str(exc))
                 route_warnings.append(
                     "ai-memory unavailable; running standalone (single attempt, no handoff memory)")
         data["ai_memory"] = {"mode": memory_mode}
@@ -3152,7 +3212,8 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         raise
     return {"task_id": task_id, "owner_token": owner_token, "state": "queued", "phase": "queued",
             "repository": str(repo), "mode": mode, "candidate_count": len(candidates),
-            "message": "task accepted; use cli_router status to follow progress"}
+            "message": "task accepted; use cli_router status to follow progress",
+            **({"degraded": data["degraded"]} if data.get("degraded") else {})}
 
 
 def _owns(data: dict[str, Any], token: Any) -> bool:

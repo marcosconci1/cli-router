@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Report chosen ai-memory and Jev failures as structured `degraded` records with stable codes, documented in docs/troubleshooting.md.
+
 ## 0.7.0
 
 - Doctor reads the Jev connection from plugin-relative settings, avoiding a false missing-configuration warning.
