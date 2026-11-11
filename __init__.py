@@ -41,3 +41,9 @@ def register(ctx) -> None:
     hermes_adapter.register(ctx, TASK_SCHEMA, _cli_router)
     from pathlib import Path
     ctx.register_skill("cli-code-router", Path(__file__).parent / "skills" / "cli-code-router" / "SKILL.md")
+    if hasattr(ctx, "register_cli_command"):
+        from . import setup_command
+        ctx.register_cli_command(
+            name="cli-router", help="Set up and check cli-router",
+            setup_fn=setup_command.setup_parser, handler_fn=setup_command.handle,
+            description="Create cli-router.yaml if absent and check this machine.")

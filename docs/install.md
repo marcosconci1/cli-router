@@ -5,47 +5,42 @@ This page covers a vanilla Hermes install: how to install the plugin, how to ena
 ## Install
 
 ```bash
-hermes plugins install marcosconci1/cli-router
+hermes plugins install marcosconci1/cli-router --enable
+hermes cli-router setup
 ```
 
-The install uses only this repository's files. Nothing is imported from sibling modules.
+The install uses only this repository's files. `--enable` adds the plugin to `plugins.enabled`; Hermes turns the `cli_router` toolset on by default for platforms with no saved `platform_toolsets` list. `setup` creates `<hermes-home>/cli-router.yaml` if absent (never overwriting it) and checks the machine. Then restart the gateway (`hermes gateway restart`) and open a fresh session; a running session never picks up plugin changes.
 
-## Enable it
+## Advanced: per-profile settings
 
-Add the plugin to your Hermes profile's `config.yaml`:
+Optional `plugins.entries` settings in the profile's `config.yaml`:
 
 ```yaml
 plugins:
-  enabled:
-    - cli-router
   entries:
     cli-router:
-      allow_tool_override: true
       settings:
-        # Optional host-wide protected worker/reviewer concurrency (default 2, range 1–8).
+        # Host-wide protected worker/reviewer concurrency (default 2, range 1-8).
         max-workers: 2
         # Optional for ranking; required for retry handoff after a failed attempt.
         connection:
           backend: openrouter
           model: typesafe/jev-1.14
-        # Optional. Turn routes on or off per CLI (absent means enabled).
+        # Turn routes on or off per CLI (absent means enabled).
         routing.providers:
           codex: true
-          kimi: true
-          agy: true
           claude: true
+```
 
-# List the platforms this profile serves; cli_router must appear under each platform in use.
+When `connection.backend` is `openrouter`, set `OPENROUTER_API_KEY` in this profile's `.env`. Jev reads that key to select routes; without it, the router falls back to deterministic ranking.
+
+A profile that keeps an explicit `platform_toolsets` list must include the toolset (`--enable` adds it for you; add it by hand if you edit the list yourself):
+
+```yaml
 platform_toolsets:
   discord:
     - cli_router
-  cli:
-    - cli_router
 ```
-
-Then restart the gateway and open a fresh session. A running session never picks up plugin changes.
-
-When `connection.backend` is `openrouter`, set `OPENROUTER_API_KEY` in this profile's `.env`. Jev reads that key to select routes; without it, the router falls back to deterministic ranking.
 
 ## Per-install cli-router settings
 
@@ -53,7 +48,7 @@ Provider toggles, model exclusions, Jev, ai-memory, review and `max-workers` liv
 
 ## Multiple profiles (several bots)
 
-Each profile or bot needs its own plugin install (or a symlink to one local clone), its own `plugins.enabled` entry, its own `platform_toolsets` entries, and its own `plugins.entries` settings. Restart the gateway once after updating the profiles; one restart covers them all. The plugin name is `cli-router`, while the toolset name is `cli_router` (underscore).
+Each profile or bot needs its own plugin install (or a symlink to one local clone), its own `plugins.enabled` entry (`--enable`), its own `platform_toolsets` entries if the profile saves an explicit list, and its own `plugins.entries` settings. Restart the gateway once after updating the profiles; one restart covers them all. The plugin name is `cli-router`, while the toolset name is `cli_router` (underscore).
 
 `max-workers` is a host-wide limit for protected worker and reviewer attempts across repositories and profiles. It defaults to `2` and accepts integers from `1` through `8`; set it in `cli-router.yaml` (see [Configuration](configuration.md)) or, as before, in the Hermes plugin settings. All active cli-router installs on a host must use the same value: a different configured value waits until current workers finish, then becomes the limit for the next active group. Restart gateways after changing it; capacity changes do not interrupt running attempts. The shared host admission lock coordinates cli-router installs that use the same user cache; it does not coordinate other tools or users.
 
@@ -63,11 +58,13 @@ Each repository keeps its existing task lock: shared for analysis and exclusive 
 
 Here `<plugin-dir>` is the directory Hermes reports after install, typically `~/.hermes/profiles/<profile>/plugins/cli-router`.
 
-1. Check prerequisites from a terminal:
+1. Create the config and check prerequisites from a terminal:
 
 ```bash
-python3 <plugin-dir>/doctor.py
+hermes cli-router setup
 ```
+
+`hermes cli-router setup --check` only reports. The lower-level `python3 <plugin-dir>/doctor.py` runs the raw checks.
 
 You can also ask Hermes to run the tool action `{"action": "doctor"}`. Every check prints `[ok]`, `[warn]`, `[skip]`, or `[fail]` with a hint. Without Jev, routing uses deterministic ranking; retries use deterministic progress-based continuation when `jev: false`, while enabled Jev that is unavailable blocks retry handoff. Missing ai-memory blocks only when set to `enabled`; `auto` falls back to standalone, and `disabled` skips the runtime check. Failed bubblewrap namespace probes are blockers. `fail` entries must be fixed before tasks will run. The `{"action": "diagnose"}` action writes a redacted bundle (version, Python and platform, doctor check statuses, the last 50 local journal lines, and the 10 most recent task states) to `runtime/cli-tasks/diagnose-<timestamp>.txt` and returns its path and text; it never includes prompts, repository paths, owner tokens, or command lines, and nothing leaves the machine.
 

@@ -39,22 +39,11 @@ flowchart LR
 ## Quick start
 
 ```bash
-hermes plugins install marcosconci1/cli-router
+hermes plugins install marcosconci1/cli-router --enable
+hermes cli-router setup
 ```
 
-Enable it in your profile `config.yaml`:
-
-For retry handoff, also add the `entries` settings block (`routing.providers` and `connection`) shown in [the install guide](docs/install.md#enable-it).
-
-```yaml
-plugins:
-  enabled:
-    - cli-router
-
-platform_toolsets:
-  discord:
-    - cli_router
-```
+`setup` creates `cli-router.yaml` in your Hermes home, checks the machine, and is safe to re-run. For retry handoff and per-profile settings see [the install guide](docs/install.md#advanced-per-profile-settings).
 
 Restart the gateway, then ask Hermes to route a task:
 
