@@ -64,7 +64,7 @@ Here `<plugin-dir>` is the directory Hermes reports after install, typically `~/
 hermes cli-router setup
 ```
 
-`hermes cli-router setup --check` only reports. The lower-level `python3 <plugin-dir>/doctor.py` runs the raw checks.
+`hermes cli-router setup --check` does not create or change `cli-router.yaml` or your config; the doctor's writability check may create the empty runtime directory. The lower-level `python3 <plugin-dir>/doctor.py` runs the raw checks.
 
 You can also ask Hermes to run the tool action `{"action": "doctor"}`. Every check prints `[ok]`, `[warn]`, `[skip]`, or `[fail]` with a hint. Without Jev, routing uses deterministic ranking; retries use deterministic progress-based continuation when `jev: false`, while enabled Jev that is unavailable blocks retry handoff. Missing ai-memory blocks only when set to `enabled`; `auto` falls back to standalone, and `disabled` skips the runtime check. Failed bubblewrap namespace probes are blockers. `fail` entries must be fixed before tasks will run. The `{"action": "diagnose"}` action writes a redacted bundle (version, Python and platform, doctor check statuses, the last 50 local journal lines, and the 10 most recent task states) to `runtime/cli-tasks/diagnose-<timestamp>.txt` and returns its path and text; it never includes prompts, repository paths, owner tokens, or command lines, and nothing leaves the machine.
 
@@ -77,11 +77,11 @@ You can also ask Hermes to run the tool action `{"action": "doctor"}`. Every che
  "acceptance_criteria": [{"type": "python_compiles", "path": "app.py"}]}
 ```
 
-The optional label is a short name shown in status and wait; omit secrets and prompts.
+The optional label is a short name shown in status and wait; omit secrets and prompts. The submit response returns an `owner_token`.
 
-3. Poll with `{"action": "wait", "task_id": "<id from step 2>"}`. A healthy run ends `completed`; with the default `independent-review: true` the record holds two independent review verdicts, and with it switched off the record says the review was skipped. The task record under `runtime/cli-tasks/<task_id>.json` holds the full attempt history.
+3. Poll with `{"action": "wait", "task_id": "<id from step 2>", "owner_token": "<token from the submit response>"}`. A healthy run ends `completed`; with the default `independent-review: true` the record holds two independent review verdicts, and with it switched off the record says the review was skipped. The task record under `runtime/cli-tasks/<task_id>.json` holds the full attempt history.
 
-While a task runs, ask your agent to poll with `wait`. Each response carries `phase`, `updated_at`, `latest_event`, `route`, and `routes_used`, so you can see where the task stands and which CLIs and models have run. A healthy run walks through queued, worker running, reviewing, and verifying, then ends `completed` with two independent review verdicts by default. Long stretches in `worker_running` are normal, since workers can run for up to 30 minutes.
+While a task runs, ask your agent to poll with `wait`. Each response carries `phase`, `updated_at` and `latest_event`; once routing starts it also carries `route` and `routes_used`, and a task submitted with a `label` also shows it. A healthy run walks through queued, worker running, reviewing, and verifying, then ends `completed` with two independent review verdicts by default. Long stretches in `worker_running` are normal, since workers can run for up to 30 minutes.
 
 Codex summaries use the final assistant message from its JSONL output. Command
 output cannot supply a review verdict. For analysis tasks with a path in the

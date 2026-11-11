@@ -140,7 +140,7 @@ def run_setup(home: Any = None, check_only: bool = False, out: Callable[[str], A
     out('  2. Ask Hermes: "route a task: fix the failing test in /path/to/repo"')
     out("")
     out("Safe to re-run. It never overwrites your cli-router.yaml.")
-    out("`hermes cli-router setup --check` only reports; it changes nothing.")
+    out("`hermes cli-router setup --check` creates and changes no config; it only reports.")
     return 1 if failed else 0
 
 
