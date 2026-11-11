@@ -247,6 +247,9 @@ def _check_jev_connection() -> dict[str, Any]:
             return failing("JEV_NOT_CONFIGURED", "")
     except Exception as exc:
         return failing("JEV_NOT_CONFIGURED", f"failed to read Jev configuration: {exc}")
+    if connection.get("backend") != "openrouter" or connection.get("model") != "typesafe/jev-1.14":
+        return failing("JEV_MODEL_UNSUPPORTED",
+                       "Jev requires backend openrouter and model typesafe/jev-1.14; deterministic fallback ranking in use")
     try:
         hermes_adapter._jev_service_cls()
     except Exception:
