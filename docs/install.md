@@ -81,7 +81,7 @@ You can also ask Hermes to run the tool action `{"action": "doctor"}`. Every che
 
 3. Poll with `{"action": "wait", "task_id": "<id from step 2>"}`. A healthy run ends `completed`; with the default `independent-review: true` the record holds two independent review verdicts, and with it switched off the record says the review was skipped. The task record under `runtime/cli-tasks/<task_id>.json` holds the full attempt history.
 
-While a task runs, ask your agent to poll with `wait`. Each response carries `phase`, `updated_at`, and `latest_event`, so you can see where the task stands. A healthy run walks through queued, worker running, reviewing, and verifying, then ends `completed` with two independent review verdicts by default. Long stretches in `worker_running` are normal, since workers can run for up to 30 minutes.
+While a task runs, ask your agent to poll with `wait`. Each response carries `phase`, `updated_at`, `latest_event`, `route`, and `routes_used`, so you can see where the task stands and which CLIs and models have run. A healthy run walks through queued, worker running, reviewing, and verifying, then ends `completed` with two independent review verdicts by default. Long stretches in `worker_running` are normal, since workers can run for up to 30 minutes.
 
 Codex summaries use the final assistant message from its JSONL output. Command
 output cannot supply a review verdict. For analysis tasks with a path in the
