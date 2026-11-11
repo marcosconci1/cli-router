@@ -14,7 +14,8 @@ Find a record in these places:
 - The `diagnose` bundle: it lists the codes found in the recent journal.
 
 A component counts as chosen when `ai-memory` is `enabled` or `auto` in `cli-router.yaml`
-or the plugin settings, or when `jev` is `true` or `settings.connection` is set.
+or the direct ai-memory plugin setting, or when `jev` is `true` or cli-router's own
+`settings.connection` is set.
 
 ## AIM_CLI_MISSING
 
@@ -34,7 +35,7 @@ or the plugin settings, or when `jev` is `true` or `settings.connection` is set.
 
 **Fix.** Set AI_MEMORY_AUTH_TOKEN in the environment of the router process.
 
-**How to verify.** Run `hermes cli-router doctor`. The ai-memory check should be `ok`.
+**How to verify.** Run `ai-memory status` and confirm it exits successfully, then run `hermes cli-router setup --check` and confirm the ai-memory check is `ok`.
 
 ## AIM_VERSION_UNSUPPORTED
 
@@ -54,7 +55,7 @@ or the plugin settings, or when `jev` is `true` or `settings.connection` is set.
 
 **Fix.** Start the ai-memory server and check AI_MEMORY_AUTH_TOKEN with `ai-memory status`.
 
-**How to verify.** Run `ai-memory status`. The first line must end with `(server)`.
+**How to verify.** Run `ai-memory status` and confirm it exits successfully, then run `hermes cli-router setup --check` and confirm the ai-memory check is `ok`.
 
 ## AIM_CHECK_FAILED
 
@@ -64,11 +65,11 @@ or the plugin settings, or when `jev` is `true` or `settings.connection` is set.
 
 **Fix.** Run `ai-memory --version` and `ai-memory status` in the repository and fix the error they show.
 
-**How to verify.** Run the doctor check again. It must be `ok`.
+**How to verify.** Run `hermes cli-router setup --check`. The ai-memory check should be `ok`.
 
 ## AIM_ATTEMPT_UNCONFIRMED
 
-**Symptom.** The task stopped as blocked after an attempt or a review.
+**Symptom.** An attempt or review lacks ledger confirmation; automatic handoff cannot continue and an affected review is incomplete.
 
 **Cause.** ai-memory did not confirm the attempt. The detail is the last line of the worker error output, for example a sandbox mount error.
 
@@ -84,17 +85,17 @@ or the plugin settings, or when `jev` is `true` or `settings.connection` is set.
 
 **Fix.** Enable the Jev plugin in Hermes with `hermes plugins enable jev` and restart Hermes.
 
-**How to verify.** Run `hermes cli-router doctor`. The jev-connection check should be `ok`.
+**How to verify.** Run `hermes cli-router setup --check`. The jev-connection check should be `ok`.
 
 ## JEV_NOT_CONFIGURED
 
 **Symptom.** Routing used the deterministic ranking.
 
-**Cause.** The Jev plugin has no `settings.connection`, or it has no backend or model.
+**Cause.** cli-router's own plugin settings have no `settings.connection`, or it has no backend or model. Jev is constructed with cli-router's Hermes context.
 
-**Fix.** Set settings.connection (backend and model) in the Jev plugin settings.
+**Fix.** Set `settings.connection` (backend and model) in cli-router's own plugin settings.
 
-**How to verify.** Run `hermes cli-router doctor`. The jev-connection check should be `ok`.
+**How to verify.** Run `hermes cli-router setup --check`. The jev-connection check should be `ok`.
 
 ## JEV_MODEL_UNSUPPORTED
 
@@ -102,7 +103,7 @@ or the plugin settings, or when `jev` is `true` or `settings.connection` is set.
 
 **Cause.** The connection is not backend `openrouter` with model `typesafe/jev-1.14`.
 
-**Fix.** Set settings.connection to backend openrouter and model typesafe/jev-1.14.
+**Fix.** Set cli-router's own `settings.connection` to backend openrouter and model typesafe/jev-1.14.
 
 **How to verify.** Submit a task. The record should not return.
 

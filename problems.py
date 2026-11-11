@@ -8,8 +8,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-_AIM_EFFECT = ("ai-memory is not used: the task runs standalone with one attempt, no handoff memory, "
-               "and reviews are not ledger-confirmed.")
+_AIM_EFFECT = ("Managed memory is unavailable. In auto mode the task runs one standalone attempt; "
+               "enabled mode blocks before launch.")
 _JEV_EFFECT = "Jev is not used: routes are ranked deterministically and the retry handoff uses the progress rule."
 
 CODES: dict[str, dict[str, str]] = {
@@ -31,18 +31,18 @@ CODES: dict[str, dict[str, str]] = {
         "fix": "Run `ai-memory --version` and `ai-memory status` in the repository and fix the error they show."},
     "AIM_ATTEMPT_UNCONFIRMED": {
         "component": "ai-memory", "title": "ai-memory did not confirm an attempt",
-        "effect": ("The task stopped after this attempt: there is no handoff memory, "
-                   "no failover, and the review is not ledger-confirmed."),
+        "effect": ("This attempt lacks memory confirmation, so automatic handoff cannot continue; "
+                   "an affected review remains incomplete."),
         "fix": "Read the detail, fix that cause, then run `ai-memory status` and submit the task again."},
     "JEV_PLUGIN_NOT_LOADED": {
         "component": "jev", "title": "Jev plugin not loaded", "effect": _JEV_EFFECT,
         "fix": "Enable the Jev plugin in Hermes with `hermes plugins enable jev` and restart Hermes."},
     "JEV_NOT_CONFIGURED": {
         "component": "jev", "title": "Jev connection not configured", "effect": _JEV_EFFECT,
-        "fix": "Set settings.connection (backend and model) in the Jev plugin settings."},
+        "fix": "Set `settings.connection` (backend and model) in cli-router's own plugin settings."},
     "JEV_MODEL_UNSUPPORTED": {
         "component": "jev", "title": "Jev connection uses an unsupported model", "effect": _JEV_EFFECT,
-        "fix": "Set settings.connection to backend openrouter and model typesafe/jev-1.14."},
+        "fix": "Set cli-router's own `settings.connection` to backend openrouter and model typesafe/jev-1.14."},
     "JEV_REQUEST_FAILED": {
         "component": "jev", "title": "Jev request failed", "effect": _JEV_EFFECT,
         "fix": "Check the OpenRouter credential and network, then retry the task."},
@@ -92,7 +92,8 @@ def _plugin_settings() -> dict[str, Any]:
     if not hermes_adapter.has_context():
         return {}
     try:
-        cfg = hermes_adapter.get_config("cli-router", {})
+        missing = object()
+        cfg = hermes_adapter.get_config("cli-router", missing)
     except Exception:
         return {}
     if not isinstance(cfg, dict):
@@ -100,6 +101,27 @@ def _plugin_settings() -> dict[str, Any]:
     merged = dict(cfg.get("settings")) if isinstance(cfg.get("settings"), dict) else {}
     merged.update({k: v for k, v in cfg.items() if k != "settings"})
     return merged
+
+
+def _plugin_value(key: str) -> Any:
+    """Read this plugin's Hermes setting, with a legacy nested fallback for old contexts."""
+    try:
+        from . import hermes_adapter
+    except ImportError:
+        import hermes_adapter
+    if not hermes_adapter.has_context():
+        return None
+    missing = object()
+    try:
+        value = hermes_adapter.get_config(key, missing)
+        valid = (isinstance(value, str) and value in {"enabled", "disabled", "auto"}
+                 if key == "ai-memory" else isinstance(value, bool) if key == "jev" else
+                 isinstance(value, dict))
+        if value is not missing and valid:
+            return value
+        return _plugin_settings().get(key)
+    except Exception:
+        return None
 
 
 def is_chosen(component: str) -> bool:
@@ -114,7 +136,7 @@ def is_chosen(component: str) -> bool:
     except Exception:
         return False
     if component == "ai-memory":
-        value = modular["ai-memory"] if "ai-memory" in modular else _plugin_settings().get("ai-memory")
+        value = modular["ai-memory"] if "ai-memory" in modular else _plugin_value("ai-memory")
         if value == "disabled":
             return False
         if value in ("enabled", "auto"):
@@ -125,7 +147,7 @@ def is_chosen(component: str) -> bool:
         except Exception:
             return False
     if component == "jev":
-        setting = modular["jev"] if "jev" in modular else _plugin_settings().get("jev")
+        setting = modular["jev"] if "jev" in modular else _plugin_value("jev")
         if setting is False:
             return False
         if setting is True:
@@ -135,6 +157,8 @@ def is_chosen(component: str) -> bool:
         try:
             missing = object()
             connection = hermes_adapter.get_config("connection", missing)
+            if connection is missing:
+                connection = _plugin_settings().get("connection", missing)
         except Exception:
             return False
         return connection is not missing and connection is not None

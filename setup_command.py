@@ -64,26 +64,14 @@ def _toolset_platforms(home: Path | None) -> list[str] | None:
 
 
 def _config_values(path: Path) -> dict[str, Any]:
-    """Read just the choice values from the existing, validated config text."""
+    """Read typed choice values through task_manager's validated YAML subset."""
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
+        module = doctor._task_manager_module()
+        payload = module._parse_config_yaml(path.read_text(encoding="utf-8"), path)
+        config = module._validate_modular_config(payload, path)
+    except Exception:
         return {}
-    values: dict[str, Any] = {}
-    in_section = False
-    for raw in lines:
-        if not raw.strip() or raw.lstrip().startswith("#"):
-            continue
-        indent = len(raw) - len(raw.lstrip())
-        line = raw.strip()
-        if indent == 0:
-            in_section = line == "cli-router:"
-            continue
-        if in_section and indent == 2 and ":" in line:
-            key, value = line.split(":", 1)
-            value = value.strip()
-            values[key.strip()] = {"true": True, "false": False}.get(value, value)
-    return values
+    return {key: config[key] for key in ("jev", "ai-memory") if key in config}
 
 
 def _render_config(jev: bool | None, ai_memory: str | None) -> bytes:
@@ -123,11 +111,15 @@ def _create_config(home: Path | None, check_only: bool, jev: bool | None,
         return "fail", "hermes home could not be located; set HERMES_HOME"
     if check_only:
         return "skip", "cli-router.yaml not created (--check)"
+    target = home / "cli-router.yaml"
     try:
         home.mkdir(parents=True, exist_ok=True)
-        (home / "cli-router.yaml").write_bytes(_render_config(jev, ai_memory))
+        with target.open("xb") as stream:
+            stream.write(_render_config(jev, ai_memory))
+    except FileExistsError:
+        return "ok", "cli-router.yaml present (kept as is)"
     except OSError as exc:
-        return "fail", f"could not create {home / 'cli-router.yaml'}: {exc}"
+        return "fail", f"could not create {target}: {exc}"
     return "new", f"created {home / 'cli-router.yaml'} (defaults; edit to taste)"
 
 
@@ -212,6 +204,12 @@ def run_setup(home: Any = None, check_only: bool = False, out: Callable[[str], A
              "tools-reachable", "no platform; add cli_router to platform_toolsets")
 
     tag, config_hint = _create_config(resolved, check_only, jev_choice, ai_memory)
+    if tag == "ok" and existing_config is None:
+        existing_config = _existing_config(resolved)
+    checks = doctor.run_checks(resolved)
+    config_check = next((check for check in checks if check["name"] == "config"), None)
+    if config_check is not None and config_check["status"] == "fail":
+        tag, config_hint = "fail", config_check["hint"]
     emit(tag, config_hint, "config", config_hint)
     flags = (("--jev", jev, "jev"), ("--ai-memory", ai_memory, "ai-memory"))
     conflict_warnings: list[tuple[str, str]] = []
@@ -250,8 +248,8 @@ def run_setup(home: Any = None, check_only: bool = False, out: Callable[[str], A
     for key, warning in conflict_warnings:
         emit("warn", warning, f"choice-{key}", warning)
 
-    checks = [c for c in doctor.run_checks(resolved) if c["name"] not in {"plugin-wiring", "config"}]
-    clis = [c for c in checks if c["name"].startswith("cli:")]
+    remaining_checks = [c for c in checks if c["name"] not in {"plugin-wiring", "config"}]
+    clis = [c for c in remaining_checks if c["name"].startswith("cli:")]
     found = [c["name"][4:] for c in clis if c["status"] == "ok"]
     if found:
         emit("ok", f"CLIs found: {', '.join(found)}", "provider-clis", f"installed: {', '.join(found)}")
@@ -261,7 +259,7 @@ def run_setup(home: Any = None, check_only: bool = False, out: Callable[[str], A
     else:
         emit("fail", "no provider CLI found", "provider-clis", "no provider CLI found")
 
-    rest = [c for c in checks if not c["name"].startswith("cli:")]
+    rest = [c for c in remaining_checks if not c["name"].startswith("cli:")]
     tools = [c for c in rest if c["name"] in {"bubblewrap", "git", "systemd-run"} and c["status"] == "ok"]
     if tools:
         emit("ok", ", ".join(c["name"] for c in tools), "tools", ", ".join(c["name"] for c in tools))
