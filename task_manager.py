@@ -367,13 +367,16 @@ _TERMINAL_JOURNAL_STATES = {"completed", "blocked", "cancelled", "failed_verific
 
 def _transition(data: dict[str, Any], phase: str, event: str, message: str | None = None,
                 *, attempt: int | None = None, route: dict[str, Any] | None = None,
-                outcome: str | None = None, **fields: Any) -> None:
+                outcome: str | None = None, event_message: str | None = None,
+                **fields: Any) -> None:
     data.update(fields)
     stamp = _stamp()
     data.update(phase=phase, updated_at=stamp)
     if message is not None:
         data["message"] = message
     entry = {"at": stamp, "event": event, "phase": phase}
+    if event_message is not None:
+        entry["message"] = event_message
     if attempt is not None:
         entry["attempt"] = attempt
     if route is not None:
@@ -2312,6 +2315,19 @@ def _external_verification(task_id: str, repo: Path, task: str,
                 reviews[-1]["worker_outcome"] = "memory_blocked"
                 break
             pending_handoff = None
+        try:
+            start_data = _read(task_id)
+        except Exception:
+            # Direct verifier calls in isolated contexts may not have a task store.
+            start_data = None
+        if isinstance(start_data, dict):
+            route_fields = {key: verifier.get(key) for key in ("cli", "model", "effort")}
+            _transition(start_data, "external_verifying", "review_started",
+                        f"CLI reviewer is running ({verifier.get('cli')} / {verifier.get('model')})",
+                        attempt=attempt_index + len(reviews),
+                        event_message=f"CLI reviewer is running ({verifier.get('cli')} / {verifier.get('model')})")
+            start_data["events"][-1]["route"] = route_fields
+            _write(task_id, start_data)
         with tempfile.TemporaryDirectory(prefix="hermes-verify-", dir=os.environ.get("TMPDIR", "/tmp")) as temp:
             snapshot = Path(temp) / "repository"
             shutil.copytree(repo, snapshot, symlinks=True)
@@ -2518,8 +2534,10 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                     return
             data["ai_memory"].update(state="attempt_running", attempt=attempt_index,
                                      candidate_rank=candidate.get("api_rank"))
-            _transition(data, "worker_running", "attempt_started", "CLI worker is running",
-                        attempt=attempt_index)
+            _transition(data, "worker_running", "attempt_started",
+                        f"CLI worker is running ({candidate.get('cli')} / {candidate.get('model')})",
+                        attempt=attempt_index,
+                        event_message=f"CLI worker is running ({candidate.get('cli')} / {candidate.get('model')})")
             outcome = _run_candidate(candidate, task, repo, mode, task_id, criteria, openrouter_key,
                                      attempt_index=attempt_index, memory_context=memory_context,
                                      new_workstream=prior_stream is None,
@@ -2764,13 +2782,46 @@ def _status_view(data: dict[str, Any], include_history: bool = False) -> dict[st
               "current_attempt", "created_at", "started_at", "updated_at", "finished_at",
               "message", "summary", "error_class", "error_detail", "route_warnings", "checkpoint")
     result = {key: data[key] for key in fields if key in data}
+    route = data.get("route")
+    if isinstance(route, dict) and isinstance(route.get("cli"), str) and isinstance(route.get("model"), str):
+        result["route"] = {key: route.get(key) for key in ("cli", "model", "effort")}
+
+    routes_used = []
+    seen_routes = set()
+
+    def add_route(role: str, candidate: Any) -> None:
+        if len(routes_used) >= 10 or not isinstance(candidate, dict):
+            return
+        cli, model = candidate.get("cli"), candidate.get("model")
+        if not isinstance(cli, str) or not cli or not isinstance(model, str) or not model:
+            return
+        effort = candidate.get("effort")
+        if effort is not None and not isinstance(effort, str):
+            return
+        identity = (role, cli, model, effort)
+        if identity in seen_routes:
+            return
+        seen_routes.add(identity)
+        routes_used.append({"role": role, "cli": cli, "model": model, "effort": effort})
+
+    attempts = data.get("attempts")
+    if isinstance(attempts, list):
+        for candidate in attempts:
+            add_route("worker", candidate)
+    verification = data.get("verification")
+    external = verification.get("external") if isinstance(verification, dict) else None
+    reviews = external.get("reviews") if isinstance(external, dict) else None
+    if isinstance(reviews, list):
+        for review in reviews:
+            add_route("review", review.get("route") if isinstance(review, dict) else None)
+    if routes_used:
+        result["routes_used"] = routes_used
     if data.get("state") in _ACTIVE_STATES:
         result["next_action"] = {
             "action": "wait", "task_id": data.get("task_id"), "timeout_seconds": 60,
             "instruction": "Use cli_router wait with your owner_token. Continue waiting in this turn; "
                            "do not start terminal sleep timers, poll repository files, or resubmit.",
         }
-    verification = data.get("verification")
     if isinstance(verification, dict):
         result["verification"] = {
             key: verification[key] for key in

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- status and wait now show which CLI and model run the task (`route`, `routes_used`)
+
 ## 0.6.0
 
 - The OpenRouter free fallback is now opt-in (providers.opencode.enabled: true), so default installs no longer fetch the catalog or warn on every task.

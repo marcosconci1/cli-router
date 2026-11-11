@@ -157,6 +157,8 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_review_runs_cheapest_then_strongest_even_when_first_passes(self):
         repo = self._repo()
+        task_id = "d" * 32
+        tm._write(task_id, {"task_id": task_id, "state": "running", "events": []})
         implementer = {"cli": "codex", "model": "implementation", "effort": "low"}
         cheap = {"cli": "kimi", "model": "cheap", "effort": None}
         strong = {"cli": "codex", "model": "strong", "effort": "high"}
@@ -165,12 +167,20 @@ class OrchestrationTests(unittest.TestCase):
                  "outcome": "needs_verification", "summary": "VERDICT: PASS",
              }) as run:
             result = tm._external_verification(
-                "a" * 32, repo, "review", [], [implementer, cheap, strong], implementer, None, 2)
+                task_id, repo, "review", [], [implementer, cheap, strong], implementer, None, 2)
         self.assertEqual([call.args[0] for call in run.call_args_list], [cheap, strong])
         self.assertEqual([call.kwargs["attempt_index"] for call in run.call_args_list], [2, 3])
         self.assertEqual(choose.call_args.kwargs["purpose"], "review")
         self.assertTrue(result["passed"])
         self.assertEqual(len(result["reviews"]), 2)
+        starts = [event for event in tm._read(task_id)["events"] if event["event"] == "review_started"]
+        self.assertEqual([event["message"] for event in starts], [
+            "CLI reviewer is running (kimi / cheap)", "CLI reviewer is running (codex / strong)",
+        ])
+        self.assertEqual([event["route"] for event in starts], [
+            {"cli": "kimi", "model": "cheap", "effort": None},
+            {"cli": "codex", "model": "strong", "effort": "high"},
+        ])
 
     def test_two_review_verdicts_are_both_required_and_runtime_failures_stop(self):
         repo = self._repo()
