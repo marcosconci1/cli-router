@@ -54,9 +54,9 @@ Restart the gateway, then ask Hermes to route a task:
  "acceptance_criteria": [{"type": "python_compiles", "path": "app.py"}]}
 ```
 
-The optional label is a short name shown in status and wait; omit secrets and prompts.
+The optional label is a short name shown in status and wait; omit secrets and prompts. The submit response returns an `owner_token`.
 
-Poll with `{"action": "wait", "task_id": "<id>"}` until it reports completed; `route` and `routes_used` show which CLI and model are running or have run.
+Poll with `{"action": "wait", "task_id": "<id>", "owner_token": "<token from the submit response>"}` until it reports completed. Each response carries `phase`, `updated_at` and `latest_event`; once routing starts it also carries `route` and `routes_used`, and a task submitted with a `label` also shows it.
 
 You can pin the worker to one CLI or model by adding `"cli": "claude"` or
 `"model": "claude-opus-5-5"` to the submit call. The pin narrows the routing

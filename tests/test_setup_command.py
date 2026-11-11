@@ -80,6 +80,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertFalse((self.home / "cli-router.yaml").exists())
         self.assertIn("[skip]  cli-router.yaml not created (--check)", lines)
+        self.assertIn("`hermes cli-router setup --check` creates and changes no config; it only reports.", lines)
 
     def test_exit_code_on_fail(self):
         bad = [dict(c) for c in CHECKS]
