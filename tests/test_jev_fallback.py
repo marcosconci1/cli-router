@@ -21,6 +21,18 @@ class Ctx:
 
 
 class JevFallback(unittest.TestCase):
+    def test_direct_plugin_false_skips_service(self):
+        class Context:
+            def get_config(self, key, default=None):
+                return {"jev": False, "connection": {"backend": "openrouter", "model": "typesafe/jev-1.14"}}.get(key, default)
+        with patch.object(tm.hermes_adapter, "_CONTEXT", Context()), \
+             patch.object(tm, "_load_modular_config", return_value={}), \
+             patch.object(tm.hermes_adapter, "_jev_service_cls",
+                          side_effect=AssertionError("disabled Jev service loaded")), \
+             patch.object(tm, "_benchmark_index", return_value=INDEX):
+            self.assertFalse(tm._jev_enabled())
+            self.assertTrue(tm._jev_choose("task", C))
+
     def test_plugin_missing(self):
         with patch.object(tm.hermes_adapter, "_CONTEXT", None):
             out = run()

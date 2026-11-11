@@ -208,6 +208,47 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(path.read_bytes(), original)
 
+    def test_actual_config_validation_is_retained_and_json_fails(self):
+        path = self.home / "cli-router.yaml"
+        original = b"cli-router:\n  jev: [broken\n"
+        path.write_bytes(original)
+        checks = [dict(c) for c in CHECKS]
+        checks[0] = doctor._check_config()
+        with patch.object(doctor, "run_checks", return_value=checks):
+            out = []
+            code = setup_command.run_setup(self.home, out=out.append, json_output=True, terminal=False)
+        payload = json.loads(out[0])
+        config_check = next(c for c in payload["checks"] if c["name"] == "config")
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(config_check["status"], "fail")
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_quoted_comment_choices_are_parsed_without_conflict(self):
+        path = self.home / "cli-router.yaml"
+        path.write_text("cli-router:\n  jev: false # comment\n  ai-memory: 'auto'\n")
+        _, lines = self.run_it(terminal=False, jev="off", ai_memory="auto")
+        self.assertIn("choices recorded: ai-memory auto, Jev off", "\n".join(lines))
+        self.assertFalse(any("not applied" in line for line in lines))
+
+    def test_exclusive_creation_loser_keeps_and_reads_winning_file(self):
+        target = self.home / "cli-router.yaml"
+        winner = b"cli-router:\n  jev: false # other writer\n  ai-memory: 'auto'\n"
+        original_open = Path.open
+
+        def racing_open(path, mode="r", *args, **kwargs):
+            if path == target and mode == "xb":
+                with original_open(path, "wb") as stream:
+                    stream.write(winner)
+                raise FileExistsError(path)
+            return original_open(path, mode, *args, **kwargs)
+
+        with patch.object(Path, "open", racing_open):
+            _, lines = self.run_it(terminal=False, jev="off", ai_memory="auto")
+        self.assertEqual(target.read_bytes(), winner)
+        self.assertIn("choices recorded: ai-memory auto, Jev off", "\n".join(lines))
+        self.assertFalse(any("not applied" in line for line in lines))
+
     def test_check_with_choice_flag_is_usage_error(self):
         parser = argparse.ArgumentParser()
         setup_command.setup_parser(parser)

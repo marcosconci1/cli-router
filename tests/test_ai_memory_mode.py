@@ -13,6 +13,28 @@ import task_manager as tm
 
 
 class AiMemoryModeTests(unittest.TestCase):
+    def test_direct_plugin_lookup_and_modular_override(self):
+        class Context:
+            def get_config(self, key, default=None):
+                return {"ai-memory": "disabled"}.get(key, default)
+        with patch.object(hermes_adapter, "_CONTEXT", Context()), \
+             patch.object(tm, "_load_modular_config", return_value={}):
+            self.assertEqual(tm._ai_memory_mode(), "disabled")
+        with patch.object(hermes_adapter, "_CONTEXT", Context()), \
+             patch.object(tm, "_load_modular_config", return_value={"ai-memory": "enabled"}):
+            self.assertEqual(tm._ai_memory_mode(), "enabled")
+
+    def test_direct_jev_false_disables_runtime(self):
+        class Context:
+            def get_config(self, key, default=None):
+                return {"jev": False, "connection": {"backend": "openrouter", "model": "m"}}.get(key, default)
+        with patch.object(hermes_adapter, "_CONTEXT", Context()), \
+             patch.object(tm, "_load_modular_config", return_value={}):
+            self.assertFalse(tm._jev_enabled())
+        with patch.object(hermes_adapter, "_CONTEXT", Context()), \
+             patch.object(tm, "_load_modular_config", return_value={"jev": True}):
+            self.assertTrue(tm._jev_enabled())
+
     def test_mode_resolution_defaults_and_configured_values(self):
         with patch.object(hermes_adapter, "has_context", return_value=False):
             self.assertEqual(tm._ai_memory_mode(), "auto")

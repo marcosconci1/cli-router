@@ -105,6 +105,22 @@ def test_is_chosen_jev(modular, plugin, expected):
         assert problems.is_chosen("jev") is expected
 
 
+def test_realistic_plugin_context_reads_each_plugin_key():
+    class Context:
+        def get_config(self, key, default=None):
+            return {"ai-memory": "disabled", "jev": False,
+                    "connection": {"backend": "openrouter", "model": "typesafe/jev-1.14"}}.get(key, default)
+    with patch.object(tm, "_load_modular_config", return_value={}), \
+         patch.object(hermes_adapter, "_CONTEXT", Context()), \
+         patch.object(bridge, "_cli", side_effect=AssertionError("disabled choice probes CLI")):
+        assert problems.is_chosen("ai-memory") is False
+        assert problems.is_chosen("jev") is False
+    with patch.object(tm, "_load_modular_config", return_value={"ai-memory": "auto", "jev": True}), \
+         patch.object(hermes_adapter, "_CONTEXT", Context()):
+        assert problems.is_chosen("ai-memory") is True
+        assert problems.is_chosen("jev") is True
+
+
 # --- classification, make, add ---------------------------------------------------------------
 
 @pytest.mark.parametrize("message,code", [
@@ -316,6 +332,37 @@ def test_jev_other_codes():
     assert svc.run.call_count == 2
 
 
+def test_jev_failure_detail_is_sanitized_and_two_calls_only():
+    class Service:
+        def __init__(self): self.calls = 0
+        def run(self, request):
+            self.calls += 1
+            return {"ok": False, "error": "missing_credential", "status_code": 401,
+                    "request": {"prompt": "private prompt"}, "headers": {"Authorization": "Bearer secret"},
+                    "body": "sk-abcdefghijklmnop1234 /home/private/file"}
+    service = Service()
+    with pytest.raises(RuntimeError) as caught:
+        tm._jev_run(service, {"prompt": "private prompt"}, "failed")
+    assert service.calls == 2
+    data = {"task_id": "a" * 32}
+    with patch.object(problems, "is_chosen", return_value=True):
+        tm._record_jev_degraded(data["task_id"], caught.value, data)
+    detail = data["degraded"][0]["detail"]
+    assert "missing_credential" in detail and "401" in detail
+    assert "private prompt" not in detail and "Bearer secret" not in detail
+    assert "sk-abcdefghijklmnop1234" not in detail and "/home/private" not in detail
+
+
+def test_handoff_context_exception_records_unconfirmed_before_block():
+    # Focused on the failure signal while retaining the blocked transition contract.
+    data = {"task_id": "f" * 32, "ai_memory": {"mode": "managed", "workstream_id": "e" * 36}}
+    with _Cfg(modular={"ai-memory": "enabled"}), patch.object(tm, "_journal"):
+        tm._record_attempt_unconfirmed(data, "ledger marker missing at /home/user/.env token=abc")
+    assert data["degraded"][0]["code"] == "AIM_ATTEMPT_UNCONFIRMED"
+    assert "ledger marker missing" in data["degraded"][0]["detail"]
+    assert "/home/user" not in data["degraded"][0]["detail"]
+
+
 def test_jev_not_chosen_adds_nothing():
     data = {"task_id": "a" * 32}
     _jev(data, {}, service=RuntimeError("Jev plugin is not loaded"))
@@ -437,3 +484,24 @@ def test_doctor_jev_fresh_install_skips_and_chosen_warns():
     with patch.object(doctor, "_modular_config", return_value={}), patch.object(tm, "_load_modular_config", return_value={}), patch.object(hermes_adapter, "_CONTEXT", Ctx2()), \
          patch.object(hermes_adapter, "_jev_service_cls", return_value=MagicMock()):
         assert doctor._check_jev_connection()["status"] == "ok"
+
+
+def test_doctor_uses_direct_plugin_choices_with_modular_precedence():
+    class Context:
+        def get_config(self, key, default=None):
+            return {"ai-memory": "disabled", "jev": False,
+                    "connection": GOOD}.get(key, default)
+    context = Context()
+    with patch.object(hermes_adapter, "_CONTEXT", context), \
+         patch.object(doctor, "_modular_config", return_value={}), \
+         patch.object(tm, "_load_modular_config", return_value={}), \
+         patch.object(doctor.ai_memory_bridge, "verify_runtime", side_effect=AssertionError("disabled check ran")):
+        assert doctor._check_ai_memory()["status"] == "skip"
+        assert doctor._check_jev_connection()["status"] == "skip"
+    with patch.object(hermes_adapter, "_CONTEXT", context), \
+         patch.object(doctor, "_modular_config", return_value={"ai-memory": "enabled", "jev": True}), \
+         patch.object(tm, "_load_modular_config", return_value={"ai-memory": "enabled", "jev": True}), \
+         patch.object(doctor.ai_memory_bridge, "verify_runtime"), \
+         patch.object(hermes_adapter, "_jev_service_cls", return_value=MagicMock()):
+        assert doctor._check_ai_memory()["chosen"] is True
+        assert doctor._check_jev_connection()["chosen"] is True

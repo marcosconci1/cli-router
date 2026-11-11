@@ -49,6 +49,27 @@ def _modular_config() -> dict[str, Any]:
     return module._load_modular_config()
 
 
+def _plugin_value(key: str) -> Any:
+    if not hermes_adapter.has_context():
+        return None
+    missing = object()
+    try:
+        value = hermes_adapter.get_config(key, missing)
+        if value is not missing and (key != "ai-memory" or
+                                     isinstance(value, str) and value in {"enabled", "disabled", "auto"}) and (
+                key != "jev" or isinstance(value, bool)):
+            return value
+        legacy = hermes_adapter.get_config("cli-router", {})
+        if isinstance(legacy, dict):
+            value = legacy.get(key)
+            if value is None and isinstance(legacy.get("settings"), dict):
+                value = legacy["settings"].get(key)
+            return value
+    except Exception:
+        pass
+    return None
+
+
 def _check_config() -> dict[str, str]:
     try:
         module = _task_manager_module()
@@ -165,16 +186,9 @@ def _check_ai_memory() -> dict[str, Any]:
         return {"name": "ai-memory", "status": "fail",
                 "hint": f"invalid cli-router.yaml configuration ({type(exc).__name__})"}
     if "ai-memory" not in modular and hermes_adapter.has_context():
-        try:
-            cfg = hermes_adapter.get_config("cli-router", {})
-            if isinstance(cfg, dict):
-                configured = cfg.get("ai-memory")
-                if configured is None and isinstance(cfg.get("settings"), dict):
-                    configured = cfg["settings"].get("ai-memory")
-                if isinstance(configured, str) and configured in {"enabled", "disabled", "auto"}:
-                    mode = configured
-        except Exception:
-            pass
+        configured = _plugin_value("ai-memory")
+        if isinstance(configured, str) and configured in {"enabled", "disabled", "auto"}:
+            mode = configured
     if mode == "disabled":
         return {"name": "ai-memory", "status": "skip", "chosen": False, "code": None,
                 "hint": "ai-memory integration disabled by configuration"}
@@ -207,14 +221,18 @@ def _check_jev_connection() -> dict[str, Any]:
     except Exception as exc:
         return {"name": "jev-connection", "status": "fail",
                 "hint": f"invalid cli-router.yaml configuration ({type(exc).__name__})"}
-    chosen = modular.get("jev") is True or _chosen("jev")
+    plugin_jev = _plugin_value("jev") if "jev" not in modular else None
+    if "jev" not in modular and plugin_jev is False:
+        return {"name": "jev-connection", "status": "skip", "chosen": False,
+                "hint": "Jev disabled by plugin settings; deterministic ranking and handoff continuation are active"}
+    chosen = modular.get("jev") is True or plugin_jev is True or _chosen("jev")
 
     def failing(code: str, hint: str) -> dict[str, Any]:
         if chosen:
             return {"name": "jev-connection", "status": "warn", "chosen": True, "code": code,
                     "hint": f"chosen but {hint}"}
         return {"name": "jev-connection", "status": "skip", "chosen": False, "code": code,
-                "hint": "Jev not chosen; deterministic fallback ranking in use (set settings.connection to use Jev)"}
+                "hint": "Jev not chosen; deterministic fallback ranking in use (set cli-router's own settings.connection to use Jev)"}
 
     if not hermes_adapter.has_context():
         code = "JEV_PLUGIN_NOT_LOADED" if chosen else "JEV_NOT_CONFIGURED"
@@ -225,7 +243,7 @@ def _check_jev_connection() -> dict[str, Any]:
         if not (connection and isinstance(connection, dict) and connection.get("backend") and connection.get("model")):
             if chosen:
                 return failing("JEV_NOT_CONFIGURED",
-                               "deterministic fallback ranking in use; configure settings.connection for work retry handoff")
+                               "deterministic fallback ranking in use; configure cli-router's own settings.connection for work retry handoff")
             return failing("JEV_NOT_CONFIGURED", "")
     except Exception as exc:
         return failing("JEV_NOT_CONFIGURED", f"failed to read Jev configuration: {exc}")

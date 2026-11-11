@@ -930,6 +930,7 @@ class PolicyTests(unittest.TestCase):
                     return ("ledger without attempt marker", 1)
                 with patch.object(tm.ai_memory_bridge, "verify_runtime"), \
                      patch.object(tm.ai_memory_bridge, "read_context_with_wait", side_effect=missing_marker) as read_context, \
+                     patch.object(tm, "_load_modular_config", return_value={"ai-memory": "enabled"}), \
                      patch.object(tm, "_run_candidate", return_value={"outcome": "needs_verification",
                          "summary": "partial", "ai_memory": ref}) as run, \
                      patch.object(tm, "_external_verification", return_value={"passed": True, "summary": "passed"}), \
@@ -944,6 +945,9 @@ class PolicyTests(unittest.TestCase):
                     required_marker=f"Code task {task_id} attempt 1")
                 self.assertEqual(data["state"], "blocked")
                 self.assertIn("no next worker was started", data["message"])
+                degraded = next(item for item in data["degraded"]
+                                if item["code"] == "AIM_ATTEMPT_UNCONFIRMED")
+                self.assertIn("prior attempt is absent from canonical memory", degraded["detail"])
             finally:
                 tm._root = old_root
 

@@ -254,14 +254,19 @@ def _ai_memory_mode() -> str:
     if not hermes_adapter.has_context():
         return "auto"
     try:
-        cfg = hermes_adapter.get_config("cli-router", {})
+        missing = object()
+        value = hermes_adapter.get_config("ai-memory", missing)
     except Exception:
         return "auto"
-    if not isinstance(cfg, dict):
-        return "auto"
-    value = cfg.get("ai-memory")
-    if value is None and isinstance(cfg.get("settings"), dict):
-        value = cfg["settings"].get("ai-memory")
+    if value is missing or not (isinstance(value, str) and value in {"enabled", "disabled", "auto"}):
+        try:
+            cfg = hermes_adapter.get_config("cli-router", {})
+        except Exception:
+            cfg = {}
+        if isinstance(cfg, dict):
+            value = cfg.get("ai-memory")
+            if value is None and isinstance(cfg.get("settings"), dict):
+                value = cfg["settings"].get("ai-memory")
     return value if isinstance(value, str) and value in {"enabled", "disabled", "auto"} else "auto"
 
 
@@ -349,17 +354,18 @@ def _record_jev_degraded(task_id: str | None, exc: BaseException,
             text = str(exc).lower()
             code = ("JEV_PLUGIN_NOT_LOADED" if "not loaded" in text or "context is unavailable" in text
                     else "JEV_REQUEST_FAILED")
-        _record_degraded(data, code, str(exc), chosen=True)
+        _record_degraded(data, code, getattr(exc, "problem_detail", str(exc)), chosen=True)
         if in_memory_data is None:
             _write(data["task_id"], data)
     except Exception:
         pass
 
 
-def _record_attempt_unconfirmed(data: dict[str, Any], stderr: Any) -> None:
+def _record_attempt_unconfirmed(data: dict[str, Any], stderr: Any, reason: Any = None) -> None:
     lines = [line.strip() for line in str(stderr or "").splitlines() if line.strip()]
+    reason_text = str(reason or "").strip()
     _record_degraded(data, "AIM_ATTEMPT_UNCONFIRMED",
-                     lines[-1] if lines else "ai-memory did not confirm this attempt")
+                     lines[-1] if lines else reason_text or "ai-memory did not confirm this attempt")
 
 
 def _journal_startup() -> None:
@@ -988,7 +994,24 @@ def _excluded_models() -> dict[str, set[str]]:
 
 
 def _jev_enabled() -> bool:
-    return _load_modular_config().get("jev", True)
+    modular = _load_modular_config()
+    if "jev" in modular:
+        return modular["jev"]
+    if hermes_adapter.has_context():
+        try:
+            missing = object()
+            value = hermes_adapter.get_config("jev", missing)
+            if value is missing:
+                cfg = hermes_adapter.get_config("cli-router", {})
+                if isinstance(cfg, dict):
+                    value = cfg.get("jev")
+                    if value is None and isinstance(cfg.get("settings"), dict):
+                        value = cfg["settings"].get("jev")
+            if isinstance(value, bool):
+                return value
+        except Exception:
+            pass
+    return True
 
 
 def _independent_review_enabled() -> bool:
@@ -1123,10 +1146,25 @@ def _record_jev_disabled(task_id: str | None, action: str,
 
 def _jev_run(service, request: dict[str, Any], failure: str) -> dict[str, Any]:
     for _ in range(2):
-        result = service.run(request)
-        if result.get("ok") is True:
+        try:
+            result = service.run(request)
+        except Exception as exc:
+            error = _jev_problem(failure, "JEV_REQUEST_FAILED")
+            error.problem_detail = f"service raised {type(exc).__name__}"
+            raise error from None
+        if isinstance(result, dict) and result.get("ok") is True:
             return result
-    raise _jev_problem(failure, "JEV_REQUEST_FAILED")
+    fields = ("error", "message", "error_type", "status", "status_code", "code")
+    safe = []
+    for key in fields:
+        value = result.get(key) if isinstance(result, dict) else None
+        if isinstance(value, (str, int, float, bool)) and not isinstance(value, bool):
+            safe.append(f"{key}={value}")
+        elif isinstance(value, bool):
+            safe.append(f"{key}={str(value).lower()}")
+    error = _jev_problem(failure, "JEV_REQUEST_FAILED")
+    error.problem_detail = "; ".join(safe) if safe else "service returned a non-ok result"
+    raise error
 
 
 def _fallback_rank(candidates: list[dict[str, Any]], index: dict[str, Any],
@@ -2393,6 +2431,7 @@ def _external_verification(task_id: str, repo: Path, task: str,
             summary = (summary + "\n" if summary else "") + "Missing required verification verdict"
         review_record = {"passed": passed, "summary": summary,
                          "verdict": verdict, "degraded_review": degraded_active,
+                         "reason": outcome.get("reason"),
                          "route": {key: verifier.get(key) for key in ("cli", "model", "effort", "api_rank")},
                          "worker_outcome": outcome.get("outcome"), "ai_memory": outcome.get("ai_memory"),
                          "attempt_index": attempt_index + len(reviews),
@@ -2653,7 +2692,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                             data[key] = latest_record[key]
                     for review in external.get("reviews") or []:
                         if isinstance(review, dict) and review.get("worker_outcome") == "memory_blocked":
-                            _record_attempt_unconfirmed(data, review.get("attempt_stderr"))
+                            _record_attempt_unconfirmed(data, review.get("attempt_stderr"), review.get("reason"))
                     last_checks["external"] = external
                     reviewed_clis.update(
                         review["route"]["cli"] for review in external.get("reviews") or []
@@ -2699,7 +2738,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                               "reason": _safe_text(outcome.get("reason", ""), 800),
                               "ai_memory": memory_ref}
             if outcome_kind == "memory_blocked":
-                _record_attempt_unconfirmed(data, outcome.get("stderr"))
+                _record_attempt_unconfirmed(data, outcome.get("stderr"), outcome.get("reason"))
                 attempt_record["attempt_stderr"] = _safe_text(outcome.get("stderr") or "", 500)
                 attempt_record["attempt_stdout"] = _safe_text(outcome.get("stdout") or "", 500)
             attempts.append(attempt_record)
@@ -2745,6 +2784,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                         handoff_context, sequence = ai_memory_bridge.read_context_with_wait(
                             repo, memory_ref["workstream_id"], required_marker=expected)
                     except Exception as exc:
+                        _record_attempt_unconfirmed(data, str(exc))
                         _transition(data, "blocked", "task_blocked",
                                     "ai-memory context is unavailable; no next worker was started",
                                     attempt=attempt_index, state="blocked", finished_at=_stamp(),
