@@ -28,6 +28,12 @@ def test_example_keys_documented():
         assert key in text, key
 
 
+def test_example_does_not_choose_jev_or_ai_memory_by_default():
+    lines = (ROOT / "cli-router.example.yaml").read_text().splitlines()
+    assert not any(re.match(r"\s+jev:\s*true\s*$", line) for line in lines)
+    assert not any(re.match(r"\s+ai-memory:\s*auto\s*$", line) for line in lines)
+
+
 def test_relative_markdown_links_exist():
     files = [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
     for path in files:
