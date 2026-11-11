@@ -1,4 +1,7 @@
 import argparse
+import contextlib
+import io
+import json
 import sys
 import tempfile
 import unittest
@@ -8,7 +11,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import doctor
+import problems
 import setup_command
+
+SECRET = "sk-abcdefghijklmnop1234"
 
 
 def _ck(name, status="ok", hint="h"):
@@ -40,9 +46,9 @@ class SetupTests(unittest.TestCase):
         self.addCleanup(q.stop)
         self.addCleanup(self.tmp.cleanup)
 
-    def run_it(self, check=False):
+    def run_it(self, check=False, **options):
         lines = []
-        code = setup_command.run_setup(self.home, check, lines.append)
+        code = setup_command.run_setup(self.home, check, lines.append, **options)
         return code, lines
 
     def test_creates_config_and_output(self):
@@ -169,6 +175,119 @@ class SetupTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 setup_command.handle(argparse.Namespace(check=True))
         self.assertEqual(cm.exception.code, 1)
+
+    def test_unflagged_nonterminal_records_no_choices(self):
+        code, lines = self.run_it(terminal=False)
+        config = (self.home / "cli-router.yaml").read_text()
+        self.assertEqual(code, 0)
+        self.assertRegex(config, r"(?m)^\s+#\s*jev: true$")
+        self.assertRegex(config, r"(?m)^\s+#\s*ai-memory: auto$")
+        self.assertIn("choices: none recorded (Jev and ai-memory not chosen)", "\n".join(lines))
+
+    def test_selected_choices_written_and_recognized(self):
+        self.run_it(terminal=False, jev="on", ai_memory="enabled")
+        config = (self.home / "cli-router.yaml").read_text()
+        self.assertRegex(config, r"(?m)^  jev: true$")
+        self.assertRegex(config, r"(?m)^  ai-memory: enabled$")
+        with patch.object(doctor._task_manager_module(), "_load_modular_config",
+                          return_value={"jev": True, "ai-memory": "enabled"}):
+            self.assertTrue(problems.is_chosen("jev"))
+            with patch.object(problems, "_plugin_settings", return_value={}):
+                self.assertTrue(problems.is_chosen("ai-memory"))
+
+    def test_existing_config_conflict_warns_and_strict_fails_without_writing(self):
+        path = self.home / "cli-router.yaml"
+        original = b"cli-router:\n  jev: false\n# preserve\n"
+        path.write_bytes(original)
+        code, lines = self.run_it(terminal=False, jev="on", ai_memory="auto")
+        self.assertEqual(code, 0)
+        self.assertTrue(any("already exists; --jev on not applied" in line for line in lines))
+        self.assertTrue(any("already exists; --ai-memory auto not applied" in line for line in lines))
+        self.assertEqual(path.read_bytes(), original)
+        code, _ = self.run_it(terminal=False, jev="on", strict=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_check_with_choice_flag_is_usage_error(self):
+        parser = argparse.ArgumentParser()
+        setup_command.setup_parser(parser)
+        with patch("sys.stderr"), self.assertRaises(SystemExit) as cm:
+            parser.parse_args(["setup", "--check", "--jev", "on"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_interactive_choices_and_enter_skip(self):
+        answers = iter(["y", ""])
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(answers)) as inp:
+            _, lines = self.run_it()
+        config = (self.home / "cli-router.yaml").read_text()
+        self.assertIn("  jev: true", config)
+        self.assertRegex(config, r"(?m)^\s+#\s*ai-memory: auto$")
+        self.assertIn("choices recorded: Jev on", "\n".join(lines))
+        self.assertEqual(inp.call_count, 2)
+
+    def test_no_input_never_prompts(self):
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=AssertionError):
+            self.run_it(no_input=True)
+
+    def test_json_is_single_object_with_exit_code_and_no_home(self):
+        out = []
+        checks = [dict(c) for c in CHECKS]
+        checks.append(_ck("quota-cache", "warn", f"token={SECRET} at {self.home}/cache"))
+        with patch.object(doctor, "run_checks", return_value=checks):
+            code = setup_command.run_setup(self.home, out=out.append, json_output=True, terminal=False)
+        self.assertEqual(len(out), 1)
+        doc = json.loads(out[0])
+        self.assertEqual(doc["exit_code"], code)
+        self.assertEqual(set(doc), {"version", "profile", "ok", "strict", "exit_code", "choices", "checks"})
+        self.assertEqual(doc["choices"], {"ai-memory": "unset", "jev": "unset"})
+        self.assertNotIn(str(self.home), out[0])
+        self.assertNotIn(SECRET, out[0])
+        self.assertTrue(all({"name", "status", "hint"} <= set(c) for c in doc["checks"]))
+
+    def test_main_accepts_choice_flags_and_help_documents_exit_codes(self):
+        stdout = io.StringIO()
+        with patch.dict("os.environ", {"HERMES_HOME": str(self.home)}), \
+             patch.object(doctor, "run_checks", return_value=[dict(c) for c in CHECKS]), \
+             contextlib.redirect_stdout(stdout):
+            code = setup_command.main(["--jev", "off", "--ai-memory", "disabled", "--no-input", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["exit_code"], code)
+        config = (self.home / "cli-router.yaml").read_text()
+        self.assertIn("  jev: false", config)
+        self.assertIn("  ai-memory: disabled", config)
+        parser = argparse.ArgumentParser()
+        setup_command.setup_parser(parser)
+        with patch("sys.stdout", new=io.StringIO()) as captured, \
+             self.assertRaises(SystemExit):
+            parser.parse_args(["setup", "--help"])
+        self.assertIn("Exit codes", captured.getvalue())
+
+    def test_chosen_failure_shows_fix_docs_and_json_details(self):
+        checks = [dict(c) for c in CHECKS]
+        checks[8] = {"name": "ai-memory", "status": "warn", "chosen": True,
+                     "code": "AIM_CLI_MISSING", "hint": "chosen but unavailable"}
+        with patch.object(doctor, "run_checks", return_value=checks):
+            _, lines = self.run_it(terminal=False, ai_memory="enabled")
+        joined = "\n".join(lines)
+        self.assertIn("        fix: " + problems.CODES["AIM_CLI_MISSING"]["fix"], joined)
+        self.assertIn("        docs: docs/troubleshooting.md#aim_cli_missing", joined)
+        output = []
+        with patch.object(doctor, "run_checks", return_value=checks):
+            code = setup_command.run_setup(self.home, out=output.append, json_output=True, terminal=False)
+        doc = json.loads(output[0])
+        self.assertEqual(doc["exit_code"], code)
+        check = next(c for c in doc["checks"] if c["name"] == "ai-memory")
+        self.assertEqual(check["code"], "AIM_CLI_MISSING")
+        self.assertTrue(check["chosen"])
+        self.assertTrue(check["fix"] and check["docs"])
+
+    def test_unchosen_failure_has_no_fix_lines(self):
+        checks = [dict(c) for c in CHECKS]
+        checks[8] = {"name": "ai-memory", "status": "skip", "chosen": False,
+                     "code": "AIM_CLI_MISSING", "hint": "not chosen"}
+        with patch.object(doctor, "run_checks", return_value=checks):
+            _, lines = self.run_it(terminal=False)
+        self.assertFalse(any(line.startswith("        fix:") or line.startswith("        docs:") for line in lines))
 
 
 if __name__ == "__main__":

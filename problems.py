@@ -115,7 +115,15 @@ def is_chosen(component: str) -> bool:
         return False
     if component == "ai-memory":
         value = modular["ai-memory"] if "ai-memory" in modular else _plugin_settings().get("ai-memory")
-        return value in ("enabled", "auto")
+        if value == "disabled":
+            return False
+        if value in ("enabled", "auto"):
+            return True
+        try:
+            task_manager.ai_memory_bridge._cli()
+            return True
+        except Exception:
+            return False
     if component == "jev":
         setting = modular["jev"] if "jev" in modular else _plugin_settings().get("jev")
         if setting is False:

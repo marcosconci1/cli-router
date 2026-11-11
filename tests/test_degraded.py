@@ -60,6 +60,10 @@ def _cfg(modular=None, plugin=None, context=True):
     return stack
 
 
+def _ai_memory_missing():
+    raise bridge.AiMemoryError("missing", code="AIM_CLI_MISSING")
+
+
 class _Cfg:
     def __init__(self, **kw):
         self.stack = _cfg(**kw)
@@ -73,16 +77,19 @@ class _Cfg:
             p.stop()
 
 
-@pytest.mark.parametrize("modular,plugin,expected", [
-    ({}, {}, False),
-    ({"ai-memory": "enabled"}, {}, True),
-    ({"ai-memory": "auto"}, {}, True),
-    ({"ai-memory": "disabled"}, {}, False),
-    ({}, {"cli-router": {"ai-memory": "auto"}}, True),
-    ({}, {"cli-router": {"ai-memory": "disabled"}}, False),
+@pytest.mark.parametrize("modular,plugin,installed,expected", [
+    ({}, {}, False, False),
+    ({}, {}, True, True),
+    ({"ai-memory": "enabled"}, {}, False, True),
+    ({"ai-memory": "auto"}, {}, False, True),
+    ({"ai-memory": "disabled"}, {}, True, False),
+    ({}, {"cli-router": {"ai-memory": "auto"}}, False, True),
+    ({}, {"cli-router": {"ai-memory": "disabled"}}, True, False),
 ])
-def test_is_chosen_ai_memory(modular, plugin, expected):
-    with _Cfg(modular=modular, plugin=plugin):
+def test_is_chosen_ai_memory(modular, plugin, installed, expected):
+    with _Cfg(modular=modular, plugin=plugin), patch.object(
+            bridge, "_cli", return_value="/bin/ai-memory" if installed else None,
+            side_effect=None if installed else _ai_memory_missing):
         assert problems.is_chosen("ai-memory") is expected
 
 
@@ -195,6 +202,7 @@ def _submit(configured_mode, verify_error=None, modular=None, plugin=None, conte
     candidate = {"cli": "codex", "provider": "openai-codex", "model": "gpt-6-luna", "effort": "low"}
     quota = {"fresh": True, "cache": {"providers": {}}}
     with _Cfg(modular=modular, plugin=plugin, context=context), \
+         patch.object(bridge, "_cli", side_effect=_ai_memory_missing), \
          patch.object(tm.ai_memory_bridge, "verify_runtime", side_effect=verify_error), \
          patch.object(tm, "_root", return_value=state), \
          patch.object(tm, "_repo", return_value=repo), \
@@ -351,7 +359,7 @@ def _run_external_review_memory_blocked(modular):
         {"outcome": "memory_blocked", "reason": "ledger unavailable", "stderr": stderr},
     ))
     state = root / "state"
-    with _Cfg(modular=modular), \
+    with _Cfg(modular=modular), patch.object(bridge, "_cli", side_effect=_ai_memory_missing), \
          patch.object(tm, "_root", return_value=state), \
          patch.object(tm.ai_memory_bridge, "verify_runtime"), \
          patch.object(tm, "_candidate_has_quota", return_value=True), \
@@ -403,6 +411,7 @@ def test_doctor_ai_memory_chosen_failing_and_not_chosen():
     assert res["code"] == "AIM_CLI_MISSING" and res["chosen"] is True
     with patch.object(doctor, "_modular_config", return_value={}), \
          patch.object(tm, "_load_modular_config", return_value={}), \
+         patch.object(bridge, "_cli", side_effect=_ai_memory_missing), \
          patch.object(hermes_adapter, "_CONTEXT", None), \
          patch.object(doctor.ai_memory_bridge, "verify_runtime", side_effect=err):
         res = doctor._check_ai_memory()

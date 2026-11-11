@@ -21,8 +21,9 @@ cli-router:
       # Opt in to the experimental OpenRouter free fallback.
       enabled: false
       excluded_models: []
-  jev: true
-  ai-memory: auto
+  # Uncomment to choose. When chosen, cli-router tells you if Jev or ai-memory stops working. Run `hermes cli-router setup --jev on --ai-memory auto` to set both.
+  # jev: true
+  # ai-memory: auto
   independent-review: true
   # Concurrent workers across repositories, an integer from 1 to 8.
   max-workers: 2
