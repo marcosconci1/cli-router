@@ -203,10 +203,7 @@ def _check_jev_connection() -> dict[str, str]:
             "hint": "standalone execution; Jev context check skipped",
         }
     try:
-        cfg = hermes_adapter.get_config("cli-router", {})
-        if not isinstance(cfg, dict):
-            cfg = {}
-        connection = cfg.get("settings", {}).get("connection") or cfg.get("connection")
+        connection = hermes_adapter.get_config("connection", {})
         if not (connection and isinstance(connection, dict) and connection.get("backend") and connection.get("model")):
             return {
                 "name": "jev-connection",

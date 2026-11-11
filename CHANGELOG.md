@@ -2,6 +2,7 @@
 
 ## 0.7.0
 
+- Doctor reads the Jev connection from plugin-relative settings, avoiding a false missing-configuration warning.
 - submit accepts an optional short label, shown in status and wait.
 - status and wait now show which CLI and model run the task (`route`, `routes_used`)
 - hermes cli-router setup: one-command first run (creates cli-router.yaml, checks the machine); install is now two commands.
