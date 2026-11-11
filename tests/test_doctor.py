@@ -67,11 +67,11 @@ class DoctorTests(unittest.TestCase):
     def test_ai_memory_requires_authenticated_server_status(self):
         cases = [
             (0, "ai-memory 3.3.3 (server)\nserver: http://localhost", "ok"),
-            (0, "server_url=http://localhost", "fail"),
-            (0, "server unreachable", "fail"),
-            (0, "warning: (server) unavailable", "fail"),
-            (0, "", "fail"),
-            (1, "ai-memory 3.3.3 (server)", "fail"),
+            (0, "server_url=http://localhost", "warn"),
+            (0, "server unreachable", "warn"),
+            (0, "warning: (server) unavailable", "warn"),
+            (0, "", "warn"),
+            (1, "ai-memory 3.3.3 (server)", "warn"),
         ]
         for returncode, stdout, expected in cases:
             with self.subTest(stdout=stdout, returncode=returncode), \
@@ -89,12 +89,12 @@ class DoctorTests(unittest.TestCase):
         with patch.object(doctor.hermes_adapter, "has_context", return_value=True), \
              patch.object(doctor.hermes_adapter, "get_config", return_value={"ai-memory": "enabled"}), \
              patch.object(doctor.shutil, "which", return_value=None):
-            self.assertEqual(doctor._check_ai_memory()["status"], "fail")
+            self.assertEqual(doctor._check_ai_memory()["status"], "warn")
         with patch.object(doctor.shutil, "which", return_value="/usr/bin/ai-memory"), \
              patch.object(doctor.hermes_adapter, "has_context", return_value=True), \
              patch.object(doctor.hermes_adapter, "get_config", return_value={"ai-memory": "enabled"}), \
              patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(doctor._check_ai_memory()["status"], "fail")
+            self.assertEqual(doctor._check_ai_memory()["status"], "warn")
         for error in (subprocess.TimeoutExpired("ai-memory", 10), OSError("private-secret")):
             with self.subTest(error=type(error).__name__), \
                  patch.object(doctor.hermes_adapter, "has_context", return_value=True), \
@@ -103,7 +103,7 @@ class DoctorTests(unittest.TestCase):
                  patch.object(doctor.ai_memory_bridge, "_parent_env", return_value={"AI_MEMORY_AUTH_TOKEN": "synthetic"}), \
                  patch.object(doctor.subprocess, "run", side_effect=error):
                 result = doctor._check_ai_memory()
-                self.assertEqual(result["status"], "fail")
+                self.assertEqual(result["status"], "warn")
                 self.assertNotIn("private-secret", result["hint"])
 
     def test_bubblewrap_probe_errors_are_blockers(self):
@@ -120,6 +120,15 @@ class DoctorTests(unittest.TestCase):
         with patch.object(hermes_adapter, "has_context", return_value=False):
             res = doctor._check_jev_connection()
             self.assertEqual(res["status"], "skip")
+
+        # An explicit Jev opt-in is chosen even without a Hermes context.
+        with patch.object(doctor, "_modular_config", return_value={"jev": True}), \
+             patch.object(hermes_adapter, "has_context", return_value=False):
+            res = doctor._check_jev_connection()
+            self.assertEqual(res["status"], "warn")
+            self.assertTrue(res["chosen"])
+            self.assertEqual(res["code"], "JEV_PLUGIN_NOT_LOADED")
+            self.assertTrue(res["hint"].startswith("chosen but"))
 
         connection = {"backend": "openrouter", "model": "typesafe/jev-1.14"}
 
@@ -153,7 +162,9 @@ class DoctorTests(unittest.TestCase):
 
                 with patch.object(hermes_adapter, "_CONTEXT", ConfigContext()):
                     res = doctor._check_jev_connection()
-                self.assertEqual(res["status"], "warn")
+                # An explicit connection value, even malformed or empty, is chosen.
+                expected = "warn" if config is not None else "skip"
+                self.assertEqual(res["status"], expected)
                 self.assertIn("deterministic fallback ranking in use", res["hint"])
 
     def test_modular_config_controls_doctor_memory_and_jev_diagnostics(self):

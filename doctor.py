@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import ai_memory_bridge, hermes_adapter
+    from . import ai_memory_bridge, hermes_adapter, problems
 except ImportError:
     import ai_memory_bridge
     import hermes_adapter
+    import problems
 
 
 def _resolve_home(home: str | os.PathLike[str] | None = None) -> Path | None:
@@ -148,7 +149,14 @@ def _check_cli(name: str) -> dict[str, str]:
     }
 
 
-def _check_ai_memory() -> dict[str, str]:
+def _chosen(component: str) -> bool:
+    try:
+        return problems.is_chosen(component)
+    except Exception:
+        return False
+
+
+def _check_ai_memory() -> dict[str, Any]:
     mode = "auto"
     try:
         modular = _modular_config()
@@ -168,65 +176,68 @@ def _check_ai_memory() -> dict[str, str]:
         except Exception:
             pass
     if mode == "disabled":
-        return {"name": "ai-memory", "status": "skip",
+        return {"name": "ai-memory", "status": "skip", "chosen": False, "code": None,
                 "hint": "ai-memory integration disabled by configuration"}
+    chosen = _chosen("ai-memory")
     # Use submit's authenticated version/server probe, not configuration text.
     try:
         ai_memory_bridge.verify_runtime(Path.cwd())
-    except ai_memory_bridge.AiMemoryError as exc:
-        if mode == "auto":
-            return {"name": "ai-memory", "status": "skip",
-                    "hint": "ai-memory optional; router will run standalone (managed memory unavailable)"}
-        return {"name": "ai-memory", "status": "fail", "hint": str(exc)}
     except Exception as exc:
+        code = problems.classify_ai_memory_error(exc)
+        if chosen:
+            return {"name": "ai-memory", "status": "warn", "chosen": True, "code": code,
+                    "hint": f"chosen but unavailable ({code}); {problems.CODES[code]['fix']}"}
         if mode == "auto":
-            return {"name": "ai-memory", "status": "skip",
-                    "hint": "ai-memory optional; router will run standalone (managed memory unavailable)"}
-        return {"name": "ai-memory", "status": "fail",
+            return {"name": "ai-memory", "status": "skip", "chosen": False, "code": code,
+                    "hint": "ai-memory not chosen; router will run standalone (managed memory unavailable)"}
+        if isinstance(exc, ai_memory_bridge.AiMemoryError):
+            return {"name": "ai-memory", "status": "fail", "chosen": chosen, "code": code, "hint": str(exc)}
+        return {"name": "ai-memory", "status": "fail", "chosen": chosen, "code": code,
                 "hint": f"ai-memory runtime check failed ({type(exc).__name__})"}
-    return {"name": "ai-memory", "status": "ok",
+    return {"name": "ai-memory", "status": "ok", "chosen": chosen,
             "hint": "supported ai-memory client and authenticated server reachable"}
 
 
-def _check_jev_connection() -> dict[str, str]:
+def _check_jev_connection() -> dict[str, Any]:
     try:
-        if _modular_config().get("jev") is False:
-            return {"name": "jev-connection", "status": "skip",
+        modular = _modular_config()
+        if modular.get("jev") is False:
+            return {"name": "jev-connection", "status": "skip", "chosen": False,
                     "hint": "Jev disabled by cli-router.yaml; deterministic ranking and handoff continuation are active"}
     except Exception as exc:
         return {"name": "jev-connection", "status": "fail",
                 "hint": f"invalid cli-router.yaml configuration ({type(exc).__name__})"}
+    chosen = modular.get("jev") is True or _chosen("jev")
+
+    def failing(code: str, hint: str) -> dict[str, Any]:
+        if chosen:
+            return {"name": "jev-connection", "status": "warn", "chosen": True, "code": code,
+                    "hint": f"chosen but {hint}"}
+        return {"name": "jev-connection", "status": "skip", "chosen": False, "code": code,
+                "hint": "Jev not chosen; deterministic fallback ranking in use (set settings.connection to use Jev)"}
+
     if not hermes_adapter.has_context():
-        return {
-            "name": "jev-connection",
-            "status": "skip",
-            "hint": "standalone execution; Jev context check skipped",
-        }
+        code = "JEV_PLUGIN_NOT_LOADED" if chosen else "JEV_NOT_CONFIGURED"
+        return failing(code, "Jev plugin context is unavailable; deterministic ranking is in use")
+
     try:
         connection = hermes_adapter.get_config("connection", {})
         if not (connection and isinstance(connection, dict) and connection.get("backend") and connection.get("model")):
-            return {
-                "name": "jev-connection",
-                "status": "warn",
-                "hint": "deterministic fallback ranking in use; configure settings.connection for work retry handoff",
-            }
+            if chosen:
+                return failing("JEV_NOT_CONFIGURED",
+                               "deterministic fallback ranking in use; configure settings.connection for work retry handoff")
+            return failing("JEV_NOT_CONFIGURED", "")
     except Exception as exc:
-        return {
-            "name": "jev-connection",
-            "status": "warn",
-            "hint": f"failed to read Jev configuration: {exc}",
-        }
+        return failing("JEV_NOT_CONFIGURED", f"failed to read Jev configuration: {exc}")
     try:
         hermes_adapter._jev_service_cls()
     except Exception:
-        return {
-            "name": "jev-connection",
-            "status": "warn",
-            "hint": "Jev plugin is not loaded in-process; deterministic fallback ranking in use; work retry handoff unavailable",
-        }
+        return failing("JEV_PLUGIN_NOT_LOADED",
+                       "Jev plugin is not loaded in-process; deterministic fallback ranking in use; work retry handoff unavailable")
     return {
         "name": "jev-connection",
         "status": "ok",
+        "chosen": chosen,
         "hint": f"Jev ranking active for {connection.get('backend')}/{connection.get('model')}",
     }
 

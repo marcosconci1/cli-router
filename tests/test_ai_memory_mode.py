@@ -147,8 +147,9 @@ class AiMemoryModeTests(unittest.TestCase):
         failure = doctor.ai_memory_bridge.AiMemoryError("memory unavailable")
         for mode, expected, side_effect in (
                 ("disabled", "skip", None),
-                ("auto", "skip", failure),
-                ("enabled", "fail", failure),
+                # Intentional (structured degraded records): an explicitly chosen, failing ai-memory warns.
+                ("auto", "warn", failure),
+                ("enabled", "warn", failure),
                 ("enabled", "ok", None)):
             with self.subTest(mode=mode, expected=expected), \
                  patch.object(doctor.hermes_adapter, "has_context", return_value=True), \
@@ -159,9 +160,9 @@ class AiMemoryModeTests(unittest.TestCase):
                 if mode == "disabled":
                     self.assertEqual(result["hint"], "ai-memory integration disabled by configuration")
                     verify.assert_not_called()
-                elif mode == "auto" and expected == "skip":
-                    self.assertEqual(result["hint"],
-                                     "ai-memory optional; router will run standalone (managed memory unavailable)")
+                elif expected == "warn":
+                    self.assertTrue(result["hint"].startswith("chosen but"))
+                    self.assertTrue(result["chosen"])
                 else:
                     verify.assert_called_once()
 

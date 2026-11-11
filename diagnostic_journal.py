@@ -153,6 +153,24 @@ def _journal_tail(path: Path) -> list[str]:
     return tail
 
 
+def _degraded_codes(path: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    try:
+        lines = [line for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+    except OSError:
+        return counts
+    for line in lines[-TAIL_LINES:]:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and entry.get("kind") == "degraded":
+            code = _safe_text(entry.get("code"), 60)
+            if re.fullmatch(r"[A-Z_]+", code):
+                counts[code] = counts.get(code, 0) + 1
+    return counts
+
+
 def _recent_tasks(directory: Path) -> list[dict[str, str]]:
     candidates = []
     for path in directory.glob("*.json"):
@@ -187,6 +205,9 @@ def build_report(home: str | os.PathLike[str], checks: list[dict[str, Any]]) -> 
         lines.append(f"  {_safe_text(check.get('name'), 80)}: {_safe_text(check.get('status'), 20)}")
     lines += ["", f"journal tail (last {TAIL_LINES}):"]
     lines += [f"  {entry}" for entry in _journal_tail(directory / JOURNAL_NAME)]
+    lines += ["", "degraded codes in journal window:"]
+    degraded = _degraded_codes(directory / JOURNAL_NAME)
+    lines += [f"  {code} x{count}" for code, count in degraded.items()] or ["  none"]
     lines += ["", f"recent tasks (up to {RECENT_TASKS}):"]
     for task in _recent_tasks(directory):
         lines.append("  " + " ".join(f"{key}={task[key] or '-'}" for key in task))
