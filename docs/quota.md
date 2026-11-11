@@ -28,6 +28,7 @@ If you need live AGY quota numbers, add your own fetcher module as `quota_provid
 ## Ranking
 
 * Default: candidates rank by a public coding benchmark index shipped in `benchmarks/`. Cost breaks ties.
-* Optional: the Jev decision plugin ranks with a live LLM call. When Jev is absent or unconfigured, the router uses the deterministic ranking and `doctor.py` reports a ranking warning. Work retries require Jev; without a successful handoff decision, a failed attempt blocks instead of starting another worker.
+* Optional: the Jev decision plugin ranks with a live LLM call. When Jev is absent or unconfigured, the router uses deterministic ranking. A failed Jev handoff assessment uses a progress-based decision and records a route warning. A failed managed ai-memory confirmation still stops handoff.
 * A Jev ranking failure adds a `route_warning` event and a `route_warnings` entry to the task record, identifying work or review ranking and the exception class. Exception messages and task prompts are omitted. Successful choices appear as `jev_answer` events, so a task can show both successful Jev decisions and fallback for later choices.
+* When a chosen optional integration fails, task replies may include a `degraded` record with a stable code and remediation link. Check submit, status, and wait; see [Troubleshooting](troubleshooting.md).
 * The `routing.providers` setting turns single CLIs on or off. An absent entry means enabled.

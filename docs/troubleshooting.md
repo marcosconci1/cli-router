@@ -1,9 +1,10 @@
 # Troubleshooting
 
 When you choose ai-memory or Jev and it fails, cli-router does not hide it. It adds a
-`degraded` record to the task. Each record has a stable `code`, a `title`, an `effect`
-(what you lose), a `detail` (why it failed this time), a `fix`, and a `docs` link to the
-section below. Anything you did not choose stays silent.
+`degraded` record to the task. Each record has a stable `code`, `component`, `chosen`,
+`title`, `effect` (what you lose), `detail` (why it failed this time), `fix`, and `docs`
+link to the section below. Anything you did not choose stays silent. A task may complete
+with an earlier degradation. A degraded review is incomplete, never passed.
 
 Find a record in these places:
 
@@ -13,9 +14,10 @@ Find a record in these places:
 - The journal `runtime/cli-tasks/events.log.jsonl`: one `degraded` event per code per task.
 - The `diagnose` bundle: it lists the codes found in the recent journal.
 
-A component counts as chosen when `ai-memory` is `enabled` or `auto` in `cli-router.yaml`
-or the direct ai-memory plugin setting, or when `jev` is `true` or cli-router's own
-`settings.connection` is set.
+A component counts as chosen when ai-memory policy is `enabled` or `auto`, or an installed
+ai-memory CLI is available under implicit `auto`. Explicit `disabled` wins. A supported
+direct ai-memory plugin setting also counts. Jev is chosen when `jev: true` or cli-router's
+own `settings.connection` is configured. Explicit `jev: false` wins.
 
 ## AIM_CLI_MISSING
 
@@ -69,9 +71,9 @@ or the direct ai-memory plugin setting, or when `jev` is `true` or cli-router's 
 
 ## AIM_ATTEMPT_UNCONFIRMED
 
-**Symptom.** An attempt or review lacks ledger confirmation; automatic handoff cannot continue and an affected review is incomplete.
+**Symptom.** An attempt or review lacks ledger confirmation. Automatic handoff cannot continue, and an affected review remains incomplete or unreviewed.
 
-**Cause.** ai-memory did not confirm the attempt. The detail is the last line of the worker error output, for example a sandbox mount error.
+**Cause.** ai-memory did not confirm the attempt. The detail is untrusted error data. It names a failing boundary, which may be outside ai-memory itself.
 
 **Fix.** Read the detail, fix that cause, then run `ai-memory status` and submit the task again.
 
@@ -109,10 +111,10 @@ or the direct ai-memory plugin setting, or when `jev` is `true` or cli-router's 
 
 ## JEV_REQUEST_FAILED
 
-**Symptom.** Routing or handoff fell back after Jev failed twice.
+**Symptom.** Routing or handoff used a deterministic fallback after Jev failed.
 
-**Cause.** Jev returned an error or a not-ok result, after the single retry.
+**Cause.** Jev returned an error or a not-ok result after its single immediate retry.
 
 **Fix.** Check the OpenRouter credential and network, then retry the task.
 
-**How to verify.** Submit a task. The record should not return.
+**How to verify.** Run `hermes cli-router setup --check` for local readiness. An explicit `hermes jev test` may be billed; local doctor status does not prove a live request works.

@@ -13,6 +13,8 @@ cli-router reads an optional `cli-router.yaml` from the Hermes home of the activ
 2. Edit the copy. Keep only the settings you want to change; omitted settings keep their Hermes value or default.
 3. Restart the gateway. A running gateway does not pick up edits.
 
+`hermes cli-router setup --no-input --jev on --ai-memory auto` records choices only when it creates the file. It never overwrites an existing config. Use `--check --strict --json` to report readiness; exit code 1 means a failed check or strict warning, while usage errors return 2. See [Optional integrations](optional-integrations.md) for headless setup and JSON details.
+
 The Hermes home is outside the plugin directory, so reinstalling or updating the plugin does not touch this file. `CLI_ROUTER_CONFIG`, when set, must name an existing file and takes precedence. Otherwise cli-router uses `<hermes-home>/cli-router.yaml`, then the legacy `<plugin-dir>/cli-router.yaml` if present.
 
 ## Keys
@@ -23,18 +25,22 @@ All keys live under a single top-level `cli-router` mapping.
 | --- | --- | --- | --- |
 | `providers.<cli>.enabled` | bool | `true` | Turns subscription routing to that CLI on or off. For `opencode`, explicitly set `true` to opt in to the experimental OpenRouter free fallback; an unset toggle leaves subscription routing unchanged and keeps that fallback off. CLIs: `codex`, `claude`, `kimi`, `agy`, `opencode`. |
 | `providers.<cli>.excluded_models` | list of model IDs | empty | Exact model IDs excluded for that CLI only. Applies to routing, reviews and pins. Empty or absent excludes nothing. |
-| `jev` | bool | `true` | `false` uses deterministic ranking and progress-based handoff, with no Jev calls. |
-| `ai-memory` | `enabled`, `disabled` or `auto` | `auto` | `enabled` requires managed ai-memory, `disabled` runs standalone, `auto` uses it when available. |
+| `jev` | bool | `true` | `false` uses deterministic ranking and progress-based handoff, with no Jev calls. Jev failures also fall back deterministically. |
+| `ai-memory` | `enabled`, `disabled` or `auto` | `auto` | `enabled` requires managed ai-memory, `disabled` runs standalone, `auto` uses it when available and otherwise runs one standalone worker attempt. |
 | `independent-review` | bool | `true` | `false` skips only the model reviews. Acceptance checks still run. |
 | `max-workers` | integer 1 to 8 | `2` | Host-wide limit on concurrent protected worker and reviewer attempts. |
+
+ai-memory defaults to `auto`. An installed CLI counts as chosen under implicit `auto`; explicit `disabled` wins. Jev is chosen when `jev: true` or cli-router's own `settings.connection` is configured. The example leaves both keys commented. Existing Hermes installations can still have an active ai-memory CLI under `auto`.
 
 ## Precedence
 
 1. The first available config file: `CLI_ROUTER_CONFIG`, then `<hermes-home>/cli-router.yaml`, then the legacy `<plugin-dir>/cli-router.yaml`.
-2. Hermes plugin settings (the legacy `routing.providers`, `routing.models`, `ai-memory` and `max-workers` keep working)
+2. The active plugin's Hermes settings, including the supported plugin-relative settings and legacy `routing.providers`, `routing.models`, `ai-memory` and `max-workers`
 3. Built-in defaults
 
 Only values the file sets explicitly override the later layers.
+
+For Jev and ai-memory, Hermes reads settings relative to the `cli-router` plugin entry. The doctor checks local config and class availability for Jev; it does not make a live Jev request.
 
 ## Examples
 
