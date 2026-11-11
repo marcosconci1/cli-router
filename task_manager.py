@@ -2778,7 +2778,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
 def _status_view(data: dict[str, Any], include_history: bool = False) -> dict[str, Any]:
     if include_history:
         return {key: value for key, value in data.items() if key != "owner_hash"}
-    fields = ("task_id", "state", "phase", "repository", "mode", "candidate_count",
+    fields = ("task_id", "state", "phase", "repository", "mode", "label", "candidate_count",
               "current_attempt", "created_at", "started_at", "updated_at", "finished_at",
               "message", "summary", "error_class", "error_detail", "route_warnings", "checkpoint")
     result = {key: data[key] for key in fields if key in data}
@@ -2977,6 +2977,14 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "cli must be a non-empty string of at most 40 characters"}
     if pin_model is not None and (not isinstance(pin_model, str) or not pin_model.strip() or len(pin_model) > 120):
         return {"ok": False, "error": "model must be a non-empty string of at most 120 characters"}
+    label = args.get("label")
+    if label is not None:
+        if not isinstance(label, str):
+            return {"ok": False, "error": "label must be a non-empty string of at most 60 characters"}
+        label = re.sub(r"\s+", " ", label).strip()
+        if not label or len(label) > 60:
+            return {"ok": False, "error": "label must be a non-empty string of at most 60 characters"}
+        label = _safe_text(label, 60)
     lock_path = _lock_path(repo)
     try:
         repo_lock = lock_path.open("a+")
@@ -2999,6 +3007,8 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
             "task_fingerprint": hashlib.sha256(task.encode()).hexdigest(),
             "criteria_count": len(criteria), "created_at": _stamp(), "attempts": [],
             "candidate_count": 0, "current_attempt": 0}
+    if label is not None:
+        data["label"] = label
     _journal("task_started", {"task_id": task_id, "repository": str(repo), "mode": mode}, data)
     # Route selection runs in the request's profile/credential scope; the worker thread runs in a
     # copy of that context so its only auth work (the Jev handoff) stays in the same scope.

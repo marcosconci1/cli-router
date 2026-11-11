@@ -61,8 +61,11 @@ Restart the gateway, then ask Hermes to route a task:
 ```json
 {"action": "submit", "mode": "change", "repository": "/path/to/repo",
  "task": "Fix the failing test in tests/api.py",
+ "label": "fix failing api test",
  "acceptance_criteria": [{"type": "python_compiles", "path": "app.py"}]}
 ```
+
+The optional label is a short name shown in status and wait; omit secrets and prompts.
 
 Poll with `{"action": "wait", "task_id": "<id>"}` until it reports completed; `route` and `routes_used` show which CLI and model are running or have run.
 
