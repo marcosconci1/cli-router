@@ -342,7 +342,7 @@ def _safe_text(value: Any, limit: int = 1000, secrets: tuple[str, ...] = ()) -> 
         if secret:
             text = text.replace(secret, "[redacted]")
     text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[redacted]", text)
-    text = re.sub(r"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)(\s*[:=]\s*)[^\s,;]+", r"\1\2[redacted]", text)
+    text = re.sub(r"(?i)(\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|token|password|secret|credentials?)\b)(\s*[:=]\s*)[^\s,;]+", r"\1\2[redacted]", text)
     text = re.sub(r"\b(sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,})\b", "[redacted]", text)
     return text[:limit]
 
@@ -397,11 +397,36 @@ def _record_jev_degraded(task_id: str | None, exc: BaseException,
         pass
 
 
+_ATTEMPT_UNCONFIRMED_CAUSES = {
+    "ai-memory authentication is unavailable",
+    "ai-memory did not confirm this attempt",
+    "ai-memory did not confirm this attempt; failover stopped",
+    "ai-memory did not persist",
+    "ai-memory did not persist the current attempt; failover stopped",
+    "ai-memory did not persist the current attempt and no agy hook session confirms it; failover stopped",
+    "task workstream has no persisted attempt context",
+    "prior attempt is absent from canonical memory; failover stopped",
+    "prior review attempt is absent from canonical memory",
+}
+
+
 def _record_attempt_unconfirmed(data: dict[str, Any], stderr: Any, reason: Any = None) -> None:
     lines = [line.strip() for line in str(stderr or "").splitlines() if line.strip()]
-    reason_text = str(reason or "").strip()
-    _record_degraded(data, "AIM_ATTEMPT_UNCONFIRMED",
-                     lines[-1] if lines else reason_text or "ai-memory did not confirm this attempt")
+    detail = "ai-memory did not confirm this attempt"
+    for line in [*lines, str(reason or "").strip()]:
+        if line in _ATTEMPT_UNCONFIRMED_CAUSES:
+            detail = line
+            break
+        match = re.fullmatch(
+            r"bwrap: Can't (mount|mkdir parents for) .+: (Read-only file system|Permission denied)", line)
+        if match:
+            detail = f"bwrap: Can't {match.group(1)} [path]: {match.group(2)}"
+            break
+        match = re.fullmatch(r"bwrap: Can't (mount|mkdir parents for) .+", line)
+        if match:
+            detail = f"bwrap: Can't {match.group(1)} [path]"
+            break
+    _record_degraded(data, "AIM_ATTEMPT_UNCONFIRMED", detail)
 
 
 def _journal_startup() -> None:

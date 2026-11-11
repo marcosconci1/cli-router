@@ -357,10 +357,9 @@ def test_handoff_context_exception_records_unconfirmed_before_block():
     # Focused on the failure signal while retaining the blocked transition contract.
     data = {"task_id": "f" * 32, "ai_memory": {"mode": "managed", "workstream_id": "e" * 36}}
     with _Cfg(modular={"ai-memory": "enabled"}), patch.object(tm, "_journal"):
-        tm._record_attempt_unconfirmed(data, "ledger marker missing at /home/user/.env token=abc")
+        tm._record_attempt_unconfirmed(data, "prior attempt is absent from canonical memory; failover stopped")
     assert data["degraded"][0]["code"] == "AIM_ATTEMPT_UNCONFIRMED"
-    assert "ledger marker missing" in data["degraded"][0]["detail"]
-    assert "/home/user" not in data["degraded"][0]["detail"]
+    assert data["degraded"][0]["detail"] == "prior attempt is absent from canonical memory; failover stopped"
 
 
 def test_jev_not_chosen_adds_nothing():
@@ -383,7 +382,7 @@ def test_memory_blocked_adds_unconfirmed_with_last_stderr_line():
     assert "first line" not in detail
 
 
-def _run_external_review_memory_blocked(modular):
+def _run_external_review_memory_blocked(modular, stderr=None):
     temporary = tempfile.TemporaryDirectory()
     root = Path(temporary.name)
     repo = root / "repo"
@@ -399,7 +398,7 @@ def _run_external_review_memory_blocked(modular):
     owner_hash = hashlib.sha256(owner_token.encode()).hexdigest()
     implementer = {"cli": "codex", "model": "implementation", "effort": "low"}
     reviewer = {"cli": "kimi", "model": "reviewer", "effort": None}
-    stderr = "first diagnostic\n\nbwrap: Can't mkdir parents for /home/example/mod/.env: Read-only file system\n"
+    stderr = stderr or "first diagnostic\n\nbwrap: Can't mkdir parents for /home/example/mod/.env: Read-only file system\n"
     outcomes = iter((
         {"outcome": "needs_verification", "summary": "changes ready",
          "ai_memory": {"workstream_id": "e" * 36, "latest_sequence": 1}},
@@ -443,6 +442,20 @@ def test_external_review_memory_blocked_is_recorded_end_to_end():
     data, view, events = _run_external_review_memory_blocked({})
     assert "degraded" not in data and "degraded" not in view
     assert events == []
+
+
+def test_memory_blocked_outputs_redact_environment_credentials():
+    first = "fixture-attempt-ai-memory"
+    second = "fixture-attempt-openrouter"
+    stderr = (f"AI_MEMORY_AUTH_TOKEN={first}\n"
+              "bwrap: Can't mkdir parents for /home/example/mod/.env: Read-only file system\n"
+              f"OPENROUTER_JEV_API_TOKEN={second}\n")
+    data, view, events = _run_external_review_memory_blocked({"ai-memory": "auto"}, stderr)
+    for output in (data, view, events):
+        serialized = json.dumps(output)
+        assert first not in serialized and second not in serialized
+    entry = next(item for item in view["degraded"] if item["code"] == "AIM_ATTEMPT_UNCONFIRMED")
+    assert entry["detail"] == "bwrap: Can't mkdir parents for [path]: Read-only file system"
 
 
 # --- doctor ----------------------------------------------------------------------------------
@@ -505,3 +518,72 @@ def test_doctor_uses_direct_plugin_choices_with_modular_precedence():
          patch.object(hermes_adapter, "_jev_service_cls", return_value=MagicMock()):
         assert doctor._check_ai_memory()["chosen"] is True
         assert doctor._check_jev_connection()["chosen"] is True
+
+
+# --- release blocker regressions --------------------------------------------------------------
+
+@pytest.mark.parametrize("key", ["AI_MEMORY_AUTH_TOKEN", "OPENROUTER_JEV_API_TOKEN", "token"])
+def test_make_redacts_token_assignments(key):
+    synthetic = f"fixture-{key.lower()}"
+    entry = problems.make("AIM_CHECK_FAILED", f"before {key}={synthetic} after")
+    assert synthetic not in entry["detail"]
+    assert f"{key}=[redacted]" in entry["detail"]
+    assert entry["detail"].startswith("before ") and entry["detail"].endswith(" after")
+
+
+@pytest.mark.parametrize("detail", ["CONTROL=fixture-control", "token_count=2", "tokenizer ready"])
+def test_make_preserves_non_secret_controls(detail):
+    assert problems.make("AIM_CHECK_FAILED", detail)["detail"] == detail
+
+
+def test_diagnostic_outputs_redact_synthetic_environment_credentials():
+    first = "fixture-ai-memory"
+    second = "fixture-openrouter"
+    err = bridge.AiMemoryError(
+        "ai-memory server health/authentication is unavailable "
+        f"AI_MEMORY_AUTH_TOKEN={first} OPENROUTER_JEV_API_TOKEN={second}")
+    err.code = "AIM_SERVER_UNAVAILABLE"
+    result, data, view, events, report = _submit("auto", err, modular={"ai-memory": "auto"})
+    for output in (result, data, view, events, report):
+        serialized = output if isinstance(output, str) else json.dumps(output)
+        assert first not in serialized and second not in serialized
+    assert "unavailable" in view["degraded"][0]["detail"]
+
+
+def test_unconfirmed_detail_ignores_unrecognized_stderr():
+    data = {"task_id": "a" * 32}
+    synthetic = "fixture-stderr"
+    stderr = ("bwrap: Can't mount /home/me/x: Read-only file system\n"
+              f"AI_MEMORY_AUTH_TOKEN={synthetic}")
+    with _Cfg(modular={"ai-memory": "auto"}), patch.object(tm, "_root", return_value=Path(tempfile.mkdtemp())):
+        tm._record_attempt_unconfirmed(data, stderr)
+    detail = data["degraded"][0]["detail"]
+    assert detail == "bwrap: Can't mount [path]: Read-only file system"
+    assert synthetic not in detail
+
+
+def test_doctor_jev_rejects_unsupported_model_and_allows_pinned_control():
+    class Context:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def get_config(self, key, default=None):
+            return self.connection if key == "connection" else default
+
+    with patch.object(doctor, "_modular_config", return_value={"jev": True}), \
+         patch.object(tm, "_load_modular_config", return_value={"jev": True}), \
+         patch.object(hermes_adapter, "_CONTEXT", Context({"backend": "cloudflare", "model": "bad"})), \
+         patch.object(hermes_adapter, "_jev_service_cls", return_value=MagicMock()):
+        result = doctor._check_jev_connection()
+    assert result["status"] == "warn" and result["chosen"] is True
+    assert result["code"] == "JEV_MODEL_UNSUPPORTED"
+    assert "backend openrouter" in result["hint"] and "model typesafe/jev-1.14" in result["hint"]
+    assert "deterministic fallback" in result["hint"]
+
+    with patch.object(doctor, "_modular_config", return_value={"jev": True}), \
+         patch.object(tm, "_load_modular_config", return_value={"jev": True}), \
+         patch.object(hermes_adapter, "_CONTEXT", Context(GOOD)), \
+         patch.object(hermes_adapter, "_jev_service_cls", return_value=MagicMock()):
+        result = doctor._check_jev_connection()
+    assert result["status"] == "ok" and result["chosen"] is True
+    assert result["hint"] == "Jev ranking active for openrouter/typesafe/jev-1.14"
