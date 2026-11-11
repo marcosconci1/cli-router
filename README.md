@@ -36,6 +36,8 @@ flowchart LR
 * Ranking works without Jev. Jev can rank with a live LLM call; when enabled it assesses retry handoffs. A per-install config can disable Jev and use deterministic ranking and progress-based retry continuation.
 * By default, two distinct models in fresh contexts and separate disposable snapshots review a change before it counts as done. The review can be switched off in `cli-router.yaml`; local acceptance checks still run and the task record shows the review as skipped.
 
+Basic: rank from local quota and benchmarks. [ai-memory](docs/optional-integrations.md): manage task continuity and confirm attempts. [Jev](docs/optional-integrations.md): provide bounded route and retry decisions. The guide covers setup and failure behavior. An installed ai-memory CLI can be used under the default `auto` policy.
+
 ## Quick start
 
 ```bash
@@ -90,6 +92,7 @@ supported YAML syntax.
 
 * [Installation](docs/install.md)
 * [Configuration](docs/configuration.md)
+* [Optional integrations](docs/optional-integrations.md)
 * [Quota behavior](docs/quota.md)
 * [The sandbox](docs/sandbox.md)
 * [Wiki: how it is built](wiki/Home.md)

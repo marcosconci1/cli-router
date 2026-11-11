@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
 - `hermes cli-router setup` accepts --ai-memory, --jev, --no-input, --strict and --json for headless installs; Jev and ai-memory are recorded as chosen only when you say so or when ai-memory is installed.
 - Report chosen ai-memory and Jev failures as structured `degraded` records with stable codes, documented in docs/troubleshooting.md.
+- Honor direct plugin-relative settings, use safe Jev failure causes, and validate existing configs without overwriting them; setup choice flags apply only when creating a config.
 
 ## 0.7.0
 

@@ -22,7 +22,8 @@ plugins:
       settings:
         # Host-wide protected worker/reviewer concurrency (default 2, range 1-8).
         max-workers: 2
-        # Optional for ranking; required for retry handoff after a failed attempt.
+        # Optional for ranking; used for retry-handoff assessment. When Jev is
+        # unavailable, retries fall back to deterministic progress-based continuation.
         connection:
           backend: openrouter
           model: typesafe/jev-1.14
@@ -32,7 +33,7 @@ plugins:
           claude: true
 ```
 
-When `connection.backend` is `openrouter`, set `OPENROUTER_API_KEY` in this profile's `.env`. Jev reads that key to select routes; without it, the router falls back to deterministic ranking.
+Jev credentials and the router's `settings.connection` are separate. The router uses its own connection namespace, and the installed Jev version determines its expected secret name. Follow [Optional integrations](optional-integrations.md#install-and-configure-jev) for version-aware setup.
 
 A profile that keeps an explicit `platform_toolsets` list must include the toolset (`--enable` adds it for you; add it by hand if you edit the list yourself):
 
@@ -64,9 +65,9 @@ Here `<plugin-dir>` is the directory Hermes reports after install, typically `~/
 hermes cli-router setup
 ```
 
-`hermes cli-router setup --check` does not create or change `cli-router.yaml` or your config; the doctor's writability check may create the empty runtime directory. The lower-level `python3 <plugin-dir>/doctor.py` runs the raw checks.
+`hermes cli-router setup --check` does not create or change config; the doctor's writability check may create the runtime directory. It prints local readiness checks. Use `--strict --json` for machine-readable output and strict warning handling. See [setup choices and exit codes](optional-integrations.md#configure-cli-router-choices). The lower-level `python3 <plugin-dir>/doctor.py` runs the raw checks.
 
-You can also ask Hermes to run the tool action `{"action": "doctor"}`. Every check prints `[ok]`, `[warn]`, `[skip]`, or `[fail]` with a hint. Without Jev, routing uses deterministic ranking; retries use deterministic progress-based continuation when `jev: false`, while enabled Jev that is unavailable blocks retry handoff. Missing ai-memory blocks only when set to `enabled`; `auto` falls back to standalone, and `disabled` skips the runtime check. Failed bubblewrap namespace probes are blockers. `fail` entries must be fixed before tasks will run. The `{"action": "diagnose"}` action writes a redacted bundle (version, Python and platform, doctor check statuses, the last 50 local journal lines, and the 10 most recent task states) to `runtime/cli-tasks/diagnose-<timestamp>.txt` and returns its path and text; it never includes prompts, repository paths, owner tokens, or command lines, and nothing leaves the machine.
+Every setup check reports `[ok]`, `[warn]`, `[skip]`, or `[fail]`. Jev ranking failures use deterministic ranking, and failed handoff assessment uses the progress rule. ai-memory `enabled` blocks when preflight is unavailable; `auto` uses one standalone worker attempt; `disabled` always runs standalone. Even with Jev fallback, a managed ai-memory handoff confirmation failure stops the next attempt. Failed bubblewrap namespace probes are blockers. `hermes cli-router setup --check` is the doctor entry point. The `diagnose` action writes a redacted local bundle for bug reports. See [troubleshooting](troubleshooting.md) for stable degraded codes and safe checks.
 
 2. Submit a real task through the `cli_router` tool:
 
@@ -79,7 +80,7 @@ You can also ask Hermes to run the tool action `{"action": "doctor"}`. Every che
 
 The optional label is a short name shown in status and wait; omit secrets and prompts. The submit response returns an `owner_token`.
 
-3. Poll with `{"action": "wait", "task_id": "<id from step 2>", "owner_token": "<token from the submit response>"}`. A healthy run ends `completed`; with the default `independent-review: true` the record holds two independent review verdicts, and with it switched off the record says the review was skipped. The task record under `runtime/cli-tasks/<task_id>.json` holds the full attempt history.
+3. Poll with `{"action": "wait", "task_id": "<id from step 2>", "owner_token": "<token from the submit response>"}`. A healthy run ends `completed`; with the default `independent-review: true` the record holds two independent review verdicts, and with it switched off the record says the review was skipped. The task record under `runtime/cli-tasks/<task_id>.json` holds the full attempt history. Check any nonempty `degraded` array in submit, status, and wait replies. See [Optional integrations](optional-integrations.md#read-degraded-records) for the reporting contract.
 
 While a task runs, ask your agent to poll with `wait`. Each response carries `phase`, `updated_at` and `latest_event`; once routing starts it also carries `route` and `routes_used`, and a task submitted with a `label` also shows it. A healthy run walks through queued, worker running, reviewing, and verifying, then ends `completed` with two independent review verdicts by default. Long stretches in `worker_running` are normal, since workers can run for up to 30 minutes.
 
@@ -93,7 +94,7 @@ Optionally pin the worker to one CLI or model by adding `"cli": "claude"` or `"m
 
 ## Doctor
 
-`doctor.py` checks: bubblewrap availability and user namespaces, Git and `systemd-run`, installed provider CLIs, the ai-memory CLI and server, the Jev connection (optional for ranking, required for retry handoff), quota cache existence and staleness, and a writable `runtime/cli-tasks/` directory. The router also keeps a local journal at `runtime/cli-tasks/events.log.jsonl` (task start/finish and doctor snapshots), trimmed to 30 days and 1 MB.
+`setup --check` checks bubblewrap availability and user namespaces, Git and `systemd-run`, installed provider CLIs, the ai-memory CLI and server, the local Jev connection and class, quota cache existence and staleness, and a writable `runtime/cli-tasks/` directory. The Jev check does not prove a live request. The router also keeps a local journal at `runtime/cli-tasks/events.log.jsonl` (task start/finish and doctor snapshots), trimmed to 30 days and 1 MB.
 
 ## Development and tests
 
@@ -113,7 +114,6 @@ The Hermes contract tests use `~/.hermes/hermes-agent` by default. Set `HERMES_A
 * At least one authenticated provider CLI, for example `codex`, `kimi`, `agy`, `claude`, or `opencode`.
 * The experimental OpenRouter free fallback is opt-in: set `providers.opencode.enabled: true` in `cli-router.yaml` to enable it. It is off by default and does not affect subscription routes when the setting is omitted.
 * On Ubuntu 24.04 and newer, AppArmor may restrict unprivileged user namespaces, which bubblewrap needs for the sandbox. The common fix is `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`; understand the security tradeoff before applying it. To persist it across reboots, place the setting in a file such as `/etc/sysctl.d/99-userns.conf` instead of running sysctl by hand each boot.
-* Optional: an authenticated ai-memory CLI and server (ai-memory 3.1.0 or newer) for cross attempt memory and the review gate. With `ai-memory: auto` (the default) the router uses it when available; `enabled` requires it and `disabled` runs without it.
-* Pointers: Jev ships as the hermes-jev Hermes plugin (install it the same way if retry handoff is wanted), and ai-memory needs an authenticated CLI and server per the ai-memory project's install documentation (https://github.com/akitaonrails/ai-memory).
-* Jev configured for OpenRouter with model `typesafe/jev-1.14` is optional. With Jev enabled but unavailable, deterministic routing works and retry handoff blocks; set `jev: false` in the per-install config for deterministic progress-based handoff.
+* Optional: an authenticated ai-memory CLI and server (ai-memory 3.1.0 or newer) for cross-attempt memory and ledger-confirmed reviews. With `ai-memory: auto` (the default), the router uses it when ready and otherwise runs one standalone worker attempt; `enabled` requires it and `disabled` runs without it.
+* [Optional integrations](optional-integrations.md) explains ai-memory installation and auth, Jev's version-specific secret names, the required router connection namespace, and local versus live checks.
 * `uv` is needed only for development and tests.
