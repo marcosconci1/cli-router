@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 - submit accepts an optional short label, shown in status and wait.
 - status and wait now show which CLI and model run the task (`route`, `routes_used`)
