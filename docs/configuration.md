@@ -29,13 +29,14 @@ All keys live under a single top-level `cli-router` mapping.
 | `ai-memory` | `enabled`, `disabled` or `auto` | `auto` | `enabled` requires managed ai-memory, `disabled` runs standalone, `auto` uses it when available and otherwise runs one standalone worker attempt. |
 | `independent-review` | bool | `true` | `false` skips only the model reviews. Acceptance checks still run. |
 | `max-workers` | integer 1 to 8 | `2` | Host-wide limit on concurrent protected worker and reviewer attempts. |
+| `quota-reserve` | integer 0 to 99 | `30` | Excludes a subscription route when any percentage window has this percent or less remaining. |
 
 ai-memory defaults to `auto`. An installed CLI counts as chosen under implicit `auto`; explicit `disabled` wins. Jev is chosen when `jev: true` or cli-router's own `settings.connection` is configured. The example leaves both keys commented. Existing Hermes installations can still have an active ai-memory CLI under `auto`.
 
 ## Precedence
 
 1. The first available config file: `CLI_ROUTER_CONFIG`, then `<hermes-home>/cli-router.yaml`, then the legacy `<plugin-dir>/cli-router.yaml`.
-2. The active plugin's Hermes settings, including the supported plugin-relative settings and legacy `routing.providers`, `routing.models`, `ai-memory` and `max-workers`
+2. The active plugin's Hermes settings, including the supported plugin-relative settings and legacy `routing.providers`, `routing.models`, `ai-memory`, `max-workers` and `quota-reserve`
 3. Built-in defaults
 
 Only values the file sets explicitly override the later layers.
@@ -74,6 +75,13 @@ Run without ai-memory:
 ```yaml
 cli-router:
   ai-memory: disabled
+```
+
+Set a 25% reserve:
+
+```yaml
+cli-router:
+  quota-reserve: 25
 ```
 
 Switch the model review off:

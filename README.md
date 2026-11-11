@@ -31,7 +31,7 @@ flowchart LR
 
 ## How it picks a route
 
-* Reads real usage windows from each provider, keeps a 20% reserve when usage is known, and never picks a route that is about to hit its limit.
+* Reads real usage windows from each provider and excludes a subscription route when any window has the configured `quota-reserve` (default 30) or less remaining.
 * Ranks candidates by a public coding benchmark index. No extra service needed.
 * Ranking works without Jev. Jev can rank with a live LLM call; when enabled it assesses retry handoffs. A per-install config can disable Jev and use deterministic ranking and progress-based retry continuation.
 * By default, two distinct models in fresh contexts and separate disposable snapshots review a change before it counts as done. The review can be switched off in `cli-router.yaml`; local acceptance checks still run and the task record shows the review as skipped.

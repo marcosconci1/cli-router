@@ -88,6 +88,9 @@ class ConfigurationError(ValueError):
     """A present cli-router.yaml file is invalid and must not be ignored."""
 
 
+DEFAULT_QUOTA_RESERVE = 30
+
+
 def _plugin_dir() -> Path:
     return Path(__file__).resolve().parent
 
@@ -200,7 +203,7 @@ def _validate_modular_config(payload: Any, path: Path) -> dict[str, Any]:
     cfg = payload["cli-router"]
     if cfg is None:
         cfg = {}
-    allowed = {"providers", "jev", "ai-memory", "independent-review", "max-workers"}
+    allowed = {"providers", "jev", "ai-memory", "independent-review", "max-workers", "quota-reserve"}
     if not isinstance(cfg, dict) or set(cfg) - allowed:
         raise ConfigurationError(f"{path}: cli-router must be a mapping with supported settings")
     providers = cfg.get("providers", {})
@@ -232,6 +235,10 @@ def _validate_modular_config(payload: Any, path: Path) -> dict[str, Any]:
         value = cfg["max-workers"]
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
             raise ConfigurationError(f"{path}: max-workers must be an integer from 1 to 8")
+    if "quota-reserve" in cfg:
+        value = cfg["quota-reserve"]
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 99:
+            raise ConfigurationError(f"{path}: quota-reserve must be an integer from 0 to 99")
     return cfg
 
 
@@ -287,6 +294,35 @@ def _max_workers() -> int:
     if value is None and isinstance(cfg.get("settings"), dict):
         value = cfg["settings"].get("max-workers")
     return worker_resources.DEFAULT_MAX_WORKERS if value is None else value
+
+
+def _quota_reserve() -> int:
+    """Read the percentage reserve, falling back safely if configuration is unreadable."""
+    try:
+        modular = _load_modular_config()
+    except Exception:
+        return DEFAULT_QUOTA_RESERVE
+    if "quota-reserve" in modular:
+        value = modular["quota-reserve"]
+    else:
+        try:
+            has_context = hermes_adapter.has_context()
+        except Exception:
+            return DEFAULT_QUOTA_RESERVE
+        if not has_context:
+            return DEFAULT_QUOTA_RESERVE
+        try:
+            cfg = hermes_adapter.get_config("cli-router", {})
+        except Exception:
+            return DEFAULT_QUOTA_RESERVE
+        if not isinstance(cfg, dict):
+            return DEFAULT_QUOTA_RESERVE
+        value = cfg.get("quota-reserve")
+        if value is None and isinstance(cfg.get("settings"), dict):
+            value = cfg["settings"].get("quota-reserve")
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 99:
+        return DEFAULT_QUOTA_RESERVE
+    return value
 
 
 def _task_dir() -> Path:
@@ -599,8 +635,9 @@ def _remaining(record: dict[str, Any]) -> tuple[bool, str]:
     if min(remaining_values) <= 0:
         return False, "quota exhausted"
     # Keep a reserve for in-flight work; absolute counts are not percentages.
-    if percent_remaining and min(percent_remaining) <= 20:
-        return False, "quota near limit (20% reserve)"
+    reserve = _quota_reserve()
+    if percent_remaining and min(percent_remaining) <= reserve:
+        return False, f"quota near limit ({reserve}% reserve)"
     return True, "quota available"
 
 
@@ -669,7 +706,7 @@ def _installed_cli(name: str) -> str | None:
     return None
 
 
-CLAUDE_QUOTA_UNKNOWN = "quota unknown (claude usage not fetched yet); 20% reserve not enforced"
+CLAUDE_QUOTA_UNKNOWN = "quota unknown (claude usage not fetched yet); configured reserve not enforced"
 
 
 def _subscriptions(q: dict[str, Any], models: dict[str, dict[str, list[str]]]) -> list[dict[str, Any]]:
