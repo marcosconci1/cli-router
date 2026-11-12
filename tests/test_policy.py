@@ -92,7 +92,7 @@ class PolicyTests(unittest.TestCase):
 
         class Context:
             def get_config(self, name, default=None):
-                return {"quota-reserve": 18}
+                return {"quota-reserve": 18}.get(name, default)
 
         with tempfile.TemporaryDirectory() as temp:
             config = Path(temp) / "cli-router.yaml"
@@ -103,8 +103,39 @@ class PolicyTests(unittest.TestCase):
                 self.assertEqual(tm._quota_reserve(), 42)
         with patch.object(tm, "_load_modular_config", return_value={}), \
              patch.object(tm.hermes_adapter, "has_context", return_value=True), \
-             patch.object(tm.hermes_adapter, "get_config", return_value={"settings": {"quota-reserve": 18}}):
+             patch.object(tm.hermes_adapter, "get_config", side_effect=lambda name, default=None:
+                          {"cli-router": {"settings": {"quota-reserve": 18}}}.get(name, default)):
             self.assertEqual(tm._quota_reserve(), 18)
+
+    def test_quota_reserve_prefers_plugin_relative_then_legacy(self):
+        class Context:
+            def __init__(self, values):
+                self.values = values
+                self.calls = []
+
+            def get_config(self, name, default=None):
+                self.calls.append(name)
+                return self.values.get(name, default)
+
+        ctx = Context({"quota-reserve": 45, "cli-router": {"quota-reserve": 18}})
+        with patch.object(tm, "_load_modular_config", return_value={}), \
+             patch.object(tm.hermes_adapter, "has_context", return_value=True), \
+             patch.object(tm.hermes_adapter, "get_config", side_effect=ctx.get_config):
+            self.assertEqual(tm._quota_reserve(), 45)
+        self.assertEqual(ctx.calls, ["quota-reserve"])
+
+        ctx = Context({"cli-router": {"settings": {"quota-reserve": 18}}})
+        with patch.object(tm, "_load_modular_config", return_value={}), \
+             patch.object(tm.hermes_adapter, "has_context", return_value=True), \
+             patch.object(tm.hermes_adapter, "get_config", side_effect=ctx.get_config):
+            self.assertEqual(tm._quota_reserve(), 18)
+        self.assertEqual(ctx.calls, ["quota-reserve", "cli-router"])
+
+    def test_quota_reserve_rejects_unsafe_hermes_value(self):
+        with patch.object(tm, "_load_modular_config", return_value={}), \
+             patch.object(tm.hermes_adapter, "has_context", return_value=True), \
+             patch.object(tm.hermes_adapter, "get_config", return_value=100):
+            self.assertEqual(tm._quota_reserve(), tm.DEFAULT_QUOTA_RESERVE)
 
     def test_bad_config_uses_safe_default_for_quota_filter(self):
         with patch.object(tm, "_load_modular_config", side_effect=tm.ConfigurationError("bad config")):
@@ -1130,7 +1161,7 @@ class PolicyTests(unittest.TestCase):
             finally:
                 tm._root = old_root
 
-    def test_memory_outage_blocks_before_quota_or_jev_assessment(self):
+    def test_memory_outage_without_agy_blocks_before_jev_assessment(self):
         import subprocess
         import tempfile
         from unittest.mock import patch
@@ -1142,7 +1173,9 @@ class PolicyTests(unittest.TestCase):
                 with patch.object(tm, "_ai_memory_mode", return_value="enabled"), \
                      patch.object(tm.ai_memory_bridge, "verify_runtime",
                                   side_effect=tm.ai_memory_bridge.AiMemoryError("ai-memory server unavailable")), \
-                     patch.object(tm, "_quota", side_effect=AssertionError("quota ran during memory outage")), \
+                     patch.object(tm, "_quota", return_value={"fresh": True, "cache": {"providers": {}}}), \
+                     patch.object(tm, "_installed_models", return_value={}), \
+                     patch.object(tm, "_subscriptions", return_value=[]), \
                      patch.object(tm, "_jev_choose", side_effect=AssertionError("Jev ran during memory outage")):
                     result = tm.dispatch({"action": "submit", "repository": str(repo), "task": "inspect",
                                           "mode": "analysis",
@@ -1786,8 +1819,9 @@ class PolicyTests(unittest.TestCase):
             self.assertNotIn(str(home / "site/.env"), blanked)  # the repository's own .env stays
             self.assertIn(str(home / ".local/share/ai-memory/hook-spool"), masked)
             agy = tm._secret_masks("agy", repo, home, home)
-            self.assertNotIn(str(home / ".local/share/ai-memory/auth-token"), agy)  # its hooks need it
-            self.assertNotIn("--tmpfs", agy)
+            self.assertIn(str(home / ".local/share/ai-memory/auth-token"), agy)
+            self.assertIn(str(home / ".config/ai-memory/client.env"), agy)
+            self.assertIn("--tmpfs", agy)
             self.assertIn(str(home / ".hermes/.env"), agy)
 
 if __name__ == "__main__":

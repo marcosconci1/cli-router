@@ -90,6 +90,30 @@ def test_diagnose_returns_redacted_bundle(home, tmp_path):
         assert forbidden not in report
 
 
+def test_legacy_structured_credentials_are_absent_from_status_journal_and_diagnose(home):
+    tid = "d" * 32
+    fixtures = ("fixture-json-token", "fixture spaced password", "nested-unquoted-key")
+    raw = ('{"token":"fixture-json-token","nested":{"password":"fixture spaced password",'
+           '"api_key":nested-unquoted-key}}')
+    tm._write(tid, {"task_id": tid, "state": "blocked", "phase": "blocked",
+                    "updated_at": tm._stamp(), "error_detail": raw,
+                    "degraded": [tm.problems.make("AIM_CHECK_FAILED", raw)]})
+    view = tm._status_view(tm._read(tid))
+    history = tm._status_view(tm._read(tid), include_history=True)
+    dj.append_event(home, "task_finished", {"task_id": tid, "error": raw})
+    checks = []
+    with patch.object(tm.doctor, "run_checks", return_value=checks):
+        report = tm.dispatch({"action": "diagnose"})["report"]
+    journal = (home / "runtime/cli-tasks/events.log.jsonl").read_text()
+    problem = json.dumps(view.get("degraded", []))
+    for secret in fixtures:
+        assert secret not in json.dumps(view)
+        assert secret not in json.dumps(history)
+        assert secret not in journal
+        assert secret not in report
+        assert secret not in problem
+
+
 def test_doctor_action_appends_snapshot(home):
     checks = [{"name": "git", "status": "ok", "hint": "x"}, {"name": "ai-memory", "status": "warn", "hint": "y"}]
     with patch.object(tm.doctor, "run_checks", return_value=checks):

@@ -21,7 +21,8 @@ def run_with_ledger(tmp_path, *, marker_present):
     stream_id = str(uuid.UUID(task_id))
     marker = f"Code task {task_id} attempt 1"
     events = [
-        {"sequence": sequence, "agent": "codex", "kind": "message", "role": "assistant",
+        {"sequence": sequence, "agent": "codex", "kind": "message",
+         "role": "user" if marker_present and sequence == 1 else "assistant",
          "content": marker if marker_present and sequence == 1 else f"verification output {sequence}"}
         for sequence in range(1, 41)
     ]

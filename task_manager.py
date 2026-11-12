@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -46,11 +47,10 @@ CLAUDE_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
 SANDBOX_STATE = {
     "claude": (".claude", ".claude.json", ".cache/claude", ".local/state/claude"),
     "kimi": (".kimi-code",),
-    # agy's ai-memory hooks run inside the sandbox and spool/record under the data dir.
-    "agy": (".gemini", ".local/share/ai-memory"),
+    # AGY writes its own login/session data; cli-router never grants it ai-memory access.
+    "agy": (".gemini",),
 }
-# Secrets no worker needs, hidden inside bubblewrap (the host is otherwise readable). agy keeps the
-# ai-memory bearer and spool: its capture hooks run in the sandbox and verification reads them.
+# Secrets no worker needs, hidden inside bubblewrap (the host is otherwise readable).
 # Writable stores for reviewers that are sandboxed only when reviewing (see _run_candidate).
 REVIEW_SANDBOX_STATE = {"codex": (".codex",)}
 AI_MEMORY_SECRETS = (".config/ai-memory/client.env", ".local/share/ai-memory/auth-token",
@@ -282,18 +282,36 @@ def _max_workers() -> int:
     modular = _load_modular_config()
     if "max-workers" in modular:
         return modular["max-workers"]
-    if not hermes_adapter.has_context():
+    value = _hermes_setting("max-workers")
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
         return worker_resources.DEFAULT_MAX_WORKERS
+    return value
+
+
+def _hermes_setting(key: str) -> Any:
+    """Read a plugin-relative Hermes setting, then the legacy cli-router mapping."""
+    try:
+        if not hermes_adapter.has_context():
+            return None
+    except Exception:
+        return None
+    missing = object()
+    try:
+        value = hermes_adapter.get_config(key, missing)
+    except Exception:
+        value = missing
+    if value is not missing and value is not None:
+        return value
     try:
         cfg = hermes_adapter.get_config("cli-router", {})
     except Exception:
-        return worker_resources.DEFAULT_MAX_WORKERS
+        return None
     if not isinstance(cfg, dict):
-        return worker_resources.DEFAULT_MAX_WORKERS
-    value = cfg.get("max-workers")
+        return None
+    value = cfg.get(key)
     if value is None and isinstance(cfg.get("settings"), dict):
-        value = cfg["settings"].get("max-workers")
-    return worker_resources.DEFAULT_MAX_WORKERS if value is None else value
+        value = cfg["settings"].get(key)
+    return value
 
 
 def _quota_reserve() -> int:
@@ -305,21 +323,7 @@ def _quota_reserve() -> int:
     if "quota-reserve" in modular:
         value = modular["quota-reserve"]
     else:
-        try:
-            has_context = hermes_adapter.has_context()
-        except Exception:
-            return DEFAULT_QUOTA_RESERVE
-        if not has_context:
-            return DEFAULT_QUOTA_RESERVE
-        try:
-            cfg = hermes_adapter.get_config("cli-router", {})
-        except Exception:
-            return DEFAULT_QUOTA_RESERVE
-        if not isinstance(cfg, dict):
-            return DEFAULT_QUOTA_RESERVE
-        value = cfg.get("quota-reserve")
-        if value is None and isinstance(cfg.get("settings"), dict):
-            value = cfg["settings"].get("quota-reserve")
+        value = _hermes_setting("quota-reserve")
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 99:
         return DEFAULT_QUOTA_RESERVE
     return value
@@ -342,7 +346,9 @@ def _safe_text(value: Any, limit: int = 1000, secrets: tuple[str, ...] = ()) -> 
         if secret:
             text = text.replace(secret, "[redacted]")
     text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[redacted]", text)
-    text = re.sub(r"(?i)(\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|token|password|secret|credentials?)\b)(\s*[:=]\s*)[^\s,;]+", r"\1\2[redacted]", text)
+    text = re.sub(
+        r'''(?ix)(["']?\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|private[_-]?key|token|password|secret|credentials?|credential)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\{[^{}]*\}|\[[^\[\]]*\]|[^\s,;\}\]]+)''',
+        r"\1[redacted]", text)
     text = re.sub(r"\b(sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,})\b", "[redacted]", text)
     return text[:limit]
 
@@ -816,9 +822,18 @@ def _worker_capable(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # writable only in change mode), so they need no approval relay.
     if not shutil.which("bwrap"):
         return [c for c in candidates if c.get("cli") not in SANDBOX_STATE]
-    # AGY is eligible again: ai-memory (through 3.2.2) never ledgers a managed agy run's prompt, so
-    # its attempt is confirmed from the hook-captured session page instead (ai_memory_bridge).
     return candidates
+
+
+AGY_MEMORY_WARNING = (
+    "AGY runs without managed ai-memory; its prompt and context are not persisted, "
+    "and any AGY worker or review failure stops further attempts."
+)
+
+
+def _candidate_memory_mode(candidate: dict[str, Any], task_memory_mode: str) -> str:
+    """AGY always runs raw and without managed-memory access, regardless of task policy."""
+    return "standalone" if candidate.get("cli") == "agy" else task_memory_mode
 
 
 CATALOG_SORTS = ("intelligence-high-to-low", "coding-high-to-low")
@@ -1508,10 +1523,10 @@ def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, 
                    memory_repo: Path | None = None,
                    fresh_session: bool = False, memory_mode: str = "managed") -> dict[str, Any]:
     cli, model, effort = candidate["cli"], candidate["model"], candidate.get("effort")
+    memory_mode = _candidate_memory_mode(candidate, memory_mode)
     memory_repo = memory_repo or repo
     precise_analysis = mode == "analysis" and any(c.get("path") for c in criteria)
-    # The attempt marker leads: ai-memory's hook-captured session page keeps only a prompt's first
-    # ~80 characters, and that page is the agy attempt's persistence evidence.
+    # Keep the task identity and attempt first for bounded diagnostics and reproducible prompts.
     worker_instructions = (
         "You are an independent CLI verification worker. Review the original task and repository state, "
         "run the relevant tests, and do not fix or edit anything. This repository is a disposable snapshot. "
@@ -1520,6 +1535,14 @@ def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, 
         if role == "verify" else
         "You are a CLI coding worker. Follow repository instructions. "
     )
+    if cli == "agy":
+        worker_instructions += (
+            "This attempt runs without cli-router managed ai-memory. The task prompt and current repository "
+            "contents are the complete available context; no prior session or memory context is available "
+            "or persisted. Inspect the current repository state and changes before acting, and stop with a "
+            "clear explanation if they do not provide enough context to proceed safely. This is the only "
+            "AGY attempt for this task; a failure will not be retried or handed off. "
+        )
     if precise_analysis:
         worker_instructions += (
             "This task requires precise repository evidence. Use tools in this attempt to inspect every "
@@ -1532,7 +1555,7 @@ def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, 
               f"Route rank {candidate.get('api_rank')}; "
               f"CLI {cli}; model {model}; effort {effort or 'provider default'}. "
               f"Mode: {mode}. Task: {task}\nAcceptance criteria:\n" + "\n".join(f"- {x}" for x in criteria))
-    if memory_context:
+    if memory_context and memory_mode != "standalone":
         prompt += "\n\n" + memory_context
     prompt = _safe_text(prompt, 36000)
     native_args: list[str] = []
@@ -1661,6 +1684,10 @@ def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, 
                         "AI_MEMORY_AUTH_TOKEN", "AI_MEMORY_SERVER_URL", "AI_MEMORY_BASE_PATH",
                         "AI_MEMORY_DATA_DIR", "AI_MEMORY_CONFIG"}}
     run_env.setdefault("HOME", str(Path.home()))
+    if cli == "agy":
+        for key in ("AI_MEMORY_AUTH_TOKEN", "AI_MEMORY_SERVER_URL", "AI_MEMORY_BASE_PATH",
+                    "AI_MEMORY_DATA_DIR", "AI_MEMORY_CONFIG"):
+            run_env.pop(key, None)
     if memory_mode != "standalone" and not run_env.get("AI_MEMORY_AUTH_TOKEN"):
         if owns_tempdir:
             isolated.cleanup()
@@ -1861,13 +1888,14 @@ def _secret_masks(cli: str, repo: Path, scratch: Path, home: Path | None = None)
         parts = resolved.relative_to(home_r).parts if resolved.is_relative_to(home_r) else resolved.parts
         return any(part.startswith("pytest-of-") for part in parts) or (".hermes" in parts and "scratch" in parts)
 
-    def target(path: Path) -> Path | None:
+    def target(path: Path, *, allow_repository_file: bool = True) -> Path | None:
         # bwrap cannot bind over a symlink: mask the resolved regular-file target instead.
         try:
             resolved = path.resolve(strict=True)
         except OSError:
             return None
-        if not resolved.is_file() or resolved.is_relative_to(repo) or ephemeral(resolved):
+        if (not resolved.is_file() or (allow_repository_file and resolved.is_relative_to(repo))
+                or ephemeral(resolved)):
             return None
         return resolved
 
@@ -1882,15 +1910,191 @@ def _secret_masks(cli: str, repo: Path, scratch: Path, home: Path | None = None)
                 continue
             if (resolved := target(parent / name)) is not None:
                 files.add(resolved)
-    if cli != "agy":
-        files.update(resolved for rel in AI_MEMORY_SECRETS if (resolved := target(home / rel)) is not None)
+    files.update(resolved for rel in AI_MEMORY_SECRETS
+                 if (resolved := target(home / rel, allow_repository_file=False)) is not None)
     args = []
     for path in sorted(files):
         args += ["--ro-bind", str(empty), str(path)]
     spool = home / AI_MEMORY_SPOOL
     if cli != "agy" and spool.is_dir():
         args += ["--tmpfs", str(spool)]
+    if cli == "agy":
+        memory_data = home / ".local" / "share" / "ai-memory"
+        if memory_data.is_dir():
+            args += ["--tmpfs", str(memory_data)]
     return args
+
+
+_AI_MEMORY_REFERENCE = re.compile(r"ai[\s._/-]*memory", re.IGNORECASE)
+
+
+def _agy_memory_config_binds(repo: Path, scratch: Path, home: Path | None = None,
+                            visible_repo: Path | None = None) -> list[str]:
+    """Overlay AGY MCP, hook, and token files with copies stripped of ai-memory entries.
+
+    Antigravity loads global, workspace, and plugin-level MCP/hook configuration. Keep
+    unrelated entries intact while preventing configured ai-memory integrations from
+    being loaded in the task sandbox. Symlinked paths fail closed because their targets
+    could change between inspection and AGY loading the config. This is a config boundary,
+    not network isolation.
+    """
+    home = home or Path.home()
+    visible_repo = visible_repo or repo
+    configured_memory_url = os.environ.get("AI_MEMORY_SERVER_URL", "").strip().rstrip("/")
+
+    def identifies_memory(value: Any) -> bool:
+        encoded = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        if _AI_MEMORY_REFERENCE.search(encoded) or re.search(r"(?i)AI_MEMORY_[A-Z0-9_]+", encoded):
+            return True
+        return bool(configured_memory_url and configured_memory_url in encoded.rstrip("/"))
+    config_files: set[tuple[str, Path]] = set()
+
+    def reject_symlinked_path(path: Path, boundary: Path) -> None:
+        candidate = path
+        while candidate != boundary:
+            if candidate.is_symlink():
+                raise RuntimeError("AGY config path symlink cannot be safely overlaid")
+            if candidate.parent == candidate:
+                break
+            candidate = candidate.parent
+
+    def collect(root: Path, boundary: Path) -> None:
+        reject_symlinked_path(root, boundary)
+        try:
+            root_mode = root.stat().st_mode
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise RuntimeError("AGY config directory cannot be safely inspected") from exc
+        if not stat.S_ISDIR(root_mode):
+            raise RuntimeError("AGY config directory cannot be safely inspected")
+        pending = [root]
+        while pending:
+            directory = pending.pop()
+            try:
+                entries = list(os.scandir(directory))
+            except OSError as exc:
+                raise RuntimeError("AGY config directory cannot be safely inspected") from exc
+            for entry in entries:
+                path = Path(entry.path)
+                if entry.is_symlink():
+                    # A symlink can be retargeted after inspection and before AGY loads
+                    # config. Reject it instead of binding only its then-current target.
+                    raise RuntimeError("AGY config symlink cannot be safely overlaid")
+                if entry.name in {"mcp_config.json", "hooks.json"}:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            config_files.add((entry.name, path))
+                        else:
+                            raise RuntimeError("AGY config file cannot be safely inspected")
+                    except OSError as exc:
+                        raise RuntimeError("AGY config file cannot be safely inspected") from exc
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(path)
+                except OSError as exc:
+                    raise RuntimeError("AGY config directory cannot be safely inspected") from exc
+
+    collect(home / ".gemini" / "config", home)
+    collect(home / ".gemini" / "antigravity-cli" / "plugins", home)
+    collect(repo / ".agents", repo)
+    oauth = home / ".gemini" / "antigravity-cli" / "mcp_oauth_tokens.json"
+    reject_symlinked_path(oauth, home)
+    try:
+        oauth_mode = oauth.lstat().st_mode
+    except FileNotFoundError:
+        oauth_mode = None
+    except OSError as exc:
+        raise RuntimeError("AGY OAuth config cannot be safely inspected") from exc
+    if oauth_mode is not None:
+        if stat.S_ISLNK(oauth_mode):
+            raise RuntimeError("AGY OAuth config symlink cannot be safely overlaid")
+        if not stat.S_ISREG(oauth_mode):
+            raise RuntimeError("AGY OAuth config cannot be safely inspected")
+        config_files.add((oauth.name, oauth))
+
+    def read_config(source: Path) -> str:
+        # Resolve every component through pinned directory descriptors. A rename
+        # cannot redirect an already-open parent; O_NOFOLLOW rejects replacements
+        # by symlinks, including at the final component.
+        fd = os.open(source.anchor, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for component in source.parts[1:-1]:
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=fd)
+                os.close(fd)
+                fd = child
+            config_fd = os.open(source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                dir_fd=fd)
+            try:
+                if not stat.S_ISREG(os.fstat(config_fd).st_mode):
+                    raise OSError("AGY configuration is not a regular file")
+                with os.fdopen(config_fd, "r", encoding="utf-8", closefd=False) as stream:
+                    return stream.read()
+            finally:
+                os.close(config_fd)
+        finally:
+            os.close(fd)
+
+    overlay_root = scratch / "agy-memory-policy"
+    binds: list[str] = []
+    for index, (config_name, source) in enumerate(sorted(config_files)):
+        try:
+            document = json.loads(read_config(source))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            # Invalid config cannot be safely filtered; an empty valid object disables
+            # the affected MCP/hook file without changing the host copy.
+            filtered: Any = {}
+            changed = True
+        else:
+            filtered = document
+            if config_name == "mcp_config.json" and isinstance(filtered, dict):
+                servers = filtered.get("mcpServers")
+                if isinstance(servers, dict):
+                    def is_memory_server(key: Any, value: Any) -> bool:
+                        if identifies_memory(key) or identifies_memory(value):
+                            return True
+                        # A generic "memory" server name at a loopback MCP endpoint is
+                        # commonly the local ai-memory bridge; remove it without touching
+                        # unrelated named local tools.
+                        encoded = json.dumps(value, ensure_ascii=False)
+                        local_memory = re.search(r"(?i)\bmemory\b", str(key)) and re.search(
+                            r"(?i)(?:127\.0\.0\.1|localhost|\[::1\])", encoded)
+                        return bool(local_memory)
+
+                    safe_servers = {key: value for key, value in servers.items()
+                                    if not is_memory_server(key, value)}
+                    changed = len(safe_servers) != len(servers)
+                    if changed:
+                        filtered = {**filtered, "mcpServers": safe_servers}
+                else:
+                    changed = False
+            elif config_name == "hooks.json" and isinstance(filtered, dict):
+                safe_hooks = {key: value for key, value in filtered.items()
+                              if not identifies_memory(key) and not identifies_memory(value)}
+                changed = len(safe_hooks) != len(filtered)
+                if changed:
+                    filtered = safe_hooks
+            else:
+                # OAuth token records are keyed by the MCP server name.
+                changed = False
+                if isinstance(filtered, dict):
+                    safe_tokens = {key: value for key, value in filtered.items()
+                                   if not identifies_memory(key)}
+                    changed = len(safe_tokens) != len(filtered)
+                    if changed:
+                        filtered = safe_tokens
+        # Always publish the inspected snapshot: leaving an unchanged host file
+        # visible would let later edits bypass filtering.
+        copy_path = overlay_root / str(index) / source.name
+        copy_path.parent.mkdir(parents=True, exist_ok=True)
+        copy_path.write_text(json.dumps(filtered, ensure_ascii=False), encoding="utf-8")
+        destination = (visible_repo / source.relative_to(repo)
+                       if source.is_relative_to(repo) else source)
+        # AGY may refresh unrelated MCP OAuth state during the task. Keep that
+        # behavior on the private task copy; discard changes with the scratch dir.
+        binds.extend(("--bind", str(copy_path), str(destination)))
+    return binds
 
 
 def _git_metadata(repo: Path) -> tuple[Path, Path, Path] | None:
@@ -1977,7 +2181,8 @@ def _git_metadata_binds(repo: Path, visible_repo: Path, mode: str) -> list[str]:
 
 def _sandbox_launcher(cli: str, executable: str, repo: Path, mode: str,
                       visible_repo: Path | None = None, *, state: tuple[str, ...] | None = None,
-                      scratch: tempfile.TemporaryDirectory | None = None):
+                      scratch: tempfile.TemporaryDirectory | None = None,
+                      home: Path | None = None):
     """``(tempdir, launcher)``: a script that runs ``executable`` under bubblewrap with the host
     read-only, /tmp and the CLI's own login/session stores writable, and the repository writable
     only in change mode. ``visible_repo`` optionally exposes it at ai-memory's repository path.
@@ -1988,7 +2193,7 @@ def _sandbox_launcher(cli: str, executable: str, repo: Path, mode: str,
     bwrap = shutil.which("bwrap")
     if not bwrap:
         return None
-    home = Path.home()
+    home = home or Path.home()
     visible_repo = visible_repo or repo
     repo_bind = "--ro-bind" if mode == "analysis" else "--bind"
     args = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--bind", "/tmp", "/tmp",
@@ -2001,6 +2206,8 @@ def _sandbox_launcher(cli: str, executable: str, repo: Path, mode: str,
     isolated = scratch or tempfile.TemporaryDirectory(prefix=f"hermes-{cli}-",
                                                        dir=os.environ.get("TMPDIR", "/tmp"))
     args += _secret_masks(cli, repo, Path(isolated.name), home)
+    if cli == "agy":
+        args += _agy_memory_config_binds(repo, Path(isolated.name), home, visible_repo)
     # Hermes points TMPDIR at its own (read-only here) scratch dir; workers need a writable one,
     # or every shell command they run fails before it starts.
     args += ["--setenv", "TMPDIR", "/tmp", "--die-with-parent", "--chdir", str(visible_repo), executable]
@@ -2450,7 +2657,7 @@ def _external_verification(task_id: str, repo: Path, task: str,
             ranked = _jev_choose(verifier_task, eligible, purpose="review",
                                  _position=completed_reviews, task_id=task_id)
             continue
-        if pending_handoff and memory_mode != "standalone":
+        if pending_handoff and memory_mode != "standalone" and verifier.get("cli") != "agy":
             try:
                 memory = pending_handoff.get("ai_memory") or {}
                 marker = f"Code task {task_id} attempt {pending_handoff['attempt_index']}"
@@ -2496,6 +2703,8 @@ def _external_verification(task_id: str, repo: Path, task: str,
                          "reason": outcome.get("reason"),
                          "route": {key: verifier.get(key) for key in ("cli", "model", "effort", "api_rank")},
                          "worker_outcome": outcome.get("outcome"), "ai_memory": outcome.get("ai_memory"),
+                         "memory_policy": ("standalone_no_memory" if verifier.get("cli") == "agy"
+                                           else memory_mode),
                          "attempt_index": attempt_index + len(reviews),
                          "policy": ("degraded_lower_tier" if degraded_active else
                                     "cheapest_suitable" if completed_reviews == 0 else "strongest_available")}
@@ -2504,6 +2713,10 @@ def _external_verification(task_id: str, repo: Path, task: str,
             review_record["attempt_stdout"] = _safe_text(outcome.get("stdout") or "", 500)
         reviews.append(review_record)
         kind = outcome.get("outcome")
+        if verifier.get("cli") == "agy" and not passed:
+            reviews[-1]["agy_review_failed"] = True
+            reviews[-1]["summary"] = (summary + "\nAGY review failed; no managed-memory review retry was started.").strip()
+            break
         if kind in {"quota_limited", "model_rate_limited", "model_unavailable"}:
             # AGY quotas are model-family scoped; other providers rotate by account.
             eligible = [c for c in eligible if (c.get("cli"), c.get("model")) not in seen_models
@@ -2548,6 +2761,7 @@ def _external_verification(task_id: str, repo: Path, task: str,
     return {"passed": complete and all(r["passed"] for r in completed),
             "complete": complete, "degraded_review": degraded_used,
             "failed": any(r.get("verdict") == "FAIL" for r in completed),
+            "agy_review_failed": any(r.get("agy_review_failed") for r in reviews),
             "summary": summary.strip(), "reviews": reviews,
             "route": reviews[-1]["route"] if reviews else None,
             "worker_outcome": reviews[-1]["worker_outcome"] if reviews else None,
@@ -2651,7 +2865,8 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
             attempt_index = int((data.get("ai_memory") or {}).get("last_attempt", 0)) + 1
             memory_context = ""
             prior_stream = (data.get("ai_memory") or {}).get("workstream_id")
-            if memory_mode != "standalone":
+            candidate_memory_mode = _candidate_memory_mode(candidate, memory_mode)
+            if candidate_memory_mode != "standalone":
                 _transition(data, "memory_check", "memory_check_started", attempt=attempt_index)
                 try:
                     if ai_memory_bridge is None:
@@ -2691,7 +2906,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                                      attempt_index=attempt_index, memory_context=memory_context,
                                      new_workstream=prior_stream is None,
                                      fresh_session=candidate.get("cli") in reviewed_clis,
-                                     memory_mode=memory_mode)
+                                     memory_mode=candidate_memory_mode)
             data.update(_read(task_id) or {})  # Preserve admission/queue events written by the launch guard.
             attempt_finished = _stamp()
             outcome_kind = outcome.get("outcome")
@@ -2706,8 +2921,11 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                 marker = f"Code task {task_id} attempt {attempt_index}"
                 data["ai_memory"].update(memory_ref, state="synced", last_attempt=attempt_index,
                                          last_attempt_marker=marker)
-            elif memory_mode == "standalone":
-                data["ai_memory"].update(state="standalone")
+            elif candidate_memory_mode == "standalone":
+                if candidate.get("cli") == "agy":
+                    data["ai_memory"].update(agy_policy="standalone_no_memory", state="standalone")
+                else:
+                    data["ai_memory"].update(state="standalone")
             elif outcome_kind != "memory_blocked":
                 outcome_kind = "memory_blocked"
                 outcome["reason"] = "ai-memory did not confirm this attempt; failover stopped"
@@ -2719,6 +2937,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                                          error=_safe_text(outcome.get("reason", "memory bridge failed"), 300))
             external_failed = False
             external_unreviewed = False
+            external_agy_failed = False
             if outcome_kind == "needs_verification":
                 _transition(data, "verifying", "verification_started", attempt=attempt_index)
                 last_checks = _independent_checks(repo, before, mode, baseline_digests)
@@ -2771,6 +2990,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                         external_failed = external.get(
                             "failed", bool(re.search(r"(?i)VERDICT:\s*FAIL", external.get("summary", ""))))
                         external_unreviewed = not external_failed
+                    external_agy_failed = bool(external.get("agy_review_failed"))
                 else:
                     last_checks["independent_checks_passed"] = False
                     if not _independent_review_enabled():
@@ -2798,7 +3018,9 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                               "started_at": attempt_started, "finished_at": attempt_finished,
                               "changed_files": last_checks.get("changed_files", []) if last_checks else [],
                               "reason": _safe_text(outcome.get("reason", ""), 800),
-                              "ai_memory": memory_ref}
+                              "ai_memory": memory_ref,
+                              "memory_policy": ("standalone_no_memory" if candidate.get("cli") == "agy"
+                                                else candidate_memory_mode)}
             if outcome_kind == "memory_blocked":
                 _record_attempt_unconfirmed(data, outcome.get("stderr"), outcome.get("reason"))
                 attempt_record["attempt_stderr"] = _safe_text(outcome.get("stderr") or "", 500)
@@ -2823,6 +3045,18 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                 exhausted_accounts.add(_quota_scope(candidate))
             if outcome_kind in ("model_unavailable", "model_rate_limited", "quota_limited", "pricing_or_capability_changed",
                                 "failed_verification"):
+                if external_agy_failed:
+                    _transition(data, "blocked", "task_blocked",
+                                "AGY reviewer failed; no repair worker or further attempt was started; current changes are preserved",
+                                attempt=attempt_index, state="blocked", finished_at=_stamp(),
+                                verification=last_checks)
+                    return
+                if candidate.get("cli") == "agy":
+                    _transition(data, "blocked", "task_blocked",
+                                "AGY attempt failed; no managed memory handoff or further worker was started; partial changes are preserved",
+                                attempt=attempt_index, state="blocked", finished_at=_stamp(),
+                                verification=last_checks)
+                    return
                 if memory_mode == "standalone":
                     final_state = "failed_verification" if last_checks is not None else "blocked"
                     _transition(data, final_state, "task_finished",
@@ -2930,9 +3164,24 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
             _LOCK_FDS.pop(task_id, None)
 
 
+_CREDENTIAL_FIELD = re.compile(
+    r"(?i)(?:^|[_-])(?:api[_-]?key|access[_-]?key|private[_-]?key|token|password|secret|credentials?|credential)$")
+
+
+def _safe_structure(value: Any) -> Any:
+    """Redact credential-shaped text and values in persisted structures before returning them."""
+    if isinstance(value, dict):
+        return {key: ("[redacted]" if isinstance(key, str) and _CREDENTIAL_FIELD.search(key)
+                      else _safe_structure(item)) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_safe_structure(item) for item in value]
+    # Redact without cutting stored text: summaries and joined reviews exceed 1000 characters.
+    return _safe_text(value, 20000) if isinstance(value, str) else value
+
+
 def _status_view(data: dict[str, Any], include_history: bool = False) -> dict[str, Any]:
     if include_history:
-        return {key: value for key, value in data.items() if key != "owner_hash"}
+        return _safe_structure({key: value for key, value in data.items() if key != "owner_hash"})
     fields = ("task_id", "state", "phase", "repository", "mode", "label", "candidate_count",
               "current_attempt", "created_at", "started_at", "updated_at", "finished_at",
               "message", "summary", "error_class", "error_detail", "route_warnings", "checkpoint")
@@ -2994,7 +3243,7 @@ def _status_view(data: dict[str, Any], include_history: bool = False) -> dict[st
     events = data.get("events") if isinstance(data.get("events"), list) else []
     result["event_count"] = len(events)
     result["latest_event"] = events[-1] if events else None
-    return result
+    return _safe_structure(result)
 
 
 def _repo_task_states(repo: Path) -> dict[str, str]:
@@ -3174,6 +3423,7 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
             _recover_orphaned_tasks(repo)
         _transition(data, "memory_check", "task_submitted", "checking the ai-memory prerequisite")
         configured_memory_mode = _ai_memory_mode()
+        memory_prerequisite_error = None
         route_warnings = []
         data["route_warnings"] = route_warnings
         if configured_memory_mode == "disabled":
@@ -3181,13 +3431,13 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         elif configured_memory_mode == "enabled":
             memory_mode = "managed"
             data["ai_memory"] = {"mode": memory_mode}
-            if ai_memory_bridge is None:
-                raise RuntimeError("ai-memory bridge module is unavailable")
             try:
+                if ai_memory_bridge is None:
+                    raise RuntimeError("ai-memory bridge module is unavailable")
                 ai_memory_bridge.verify_runtime(repo)
             except Exception as exc:
                 _record_degraded(data, problems.classify_ai_memory_error(exc), str(exc), chosen=True)
-                raise
+                memory_prerequisite_error = exc
         else:
             try:
                 if ai_memory_bridge is None:
@@ -3205,14 +3455,27 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
                         ai_memory=data["ai_memory"])
             data["events"][-1]["mode"] = memory_mode
             _write(task_id, data)
-        # Confirm the portable handoff service before quota refresh or Jev
-        # evaluation; an outage must not trigger paid routing work.
+        # Managed-memory outages still permit AGY-only routing. Discover quota
+        # eligibility before ranking, then exclude every managed-memory route.
         _transition(data, "quota_check", "quota_check_started", "checking subscription quota")
-        quota = _quota(refresh=False)
-        if not quota["fresh"]:
-            quota = _quota(refresh=True)
-        subscription_candidates = _worker_capable(_subscriptions(quota, _installed_models()))
-        subscription_candidates = _filter_candidates_by_toggle(subscription_candidates, task_id=task_id, in_memory_data=data)
+        try:
+            quota = _quota(refresh=False)
+            if not quota["fresh"]:
+                quota = _quota(refresh=True)
+            subscription_candidates = _worker_capable(_subscriptions(quota, _installed_models()))
+            subscription_candidates = _filter_candidates_by_toggle(subscription_candidates, task_id=task_id, in_memory_data=data)
+        except Exception as exc:
+            # During a required-memory outage the outage is the root cause; keep it.
+            if memory_prerequisite_error is not None:
+                raise memory_prerequisite_error from exc
+            raise
+        if memory_prerequisite_error is not None:
+            subscription_candidates = [c for c in subscription_candidates if c.get("cli") == "agy"]
+            route_warnings.append(
+                "managed ai-memory is unavailable; only AGY standalone no-memory attempts can be routed")
+            if not subscription_candidates:
+                # Re-raise the original outage so error_class/error_detail keep the real cause.
+                raise memory_prerequisite_error
         if pin_cli or pin_model:
             pinned, unmatched = [], sorted({f"{c.get('cli')}/{c.get('model')}" for c in subscription_candidates})
             for c in subscription_candidates:
@@ -3242,7 +3505,7 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         # scope, so Jev assesses every candidate before the worker starts.
         if pin_cli or pin_model:
             candidates = subscription_ranked
-        elif _provider_toggles().get("opencode") is True:
+        elif memory_prerequisite_error is None and _provider_toggles().get("opencode") is True:
             _transition(data, "fallback_routing", "fallback_routing_started",
                         "assessing the OpenRouter free fallback")
             try:
@@ -3275,8 +3538,9 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         repo_lock.close()
         message = (f"cli-router configuration invalid: {_safe_text(str(exc), 250)}"
                    if isinstance(exc, ConfigurationError) else
-                   "ai-memory prerequisite failed; no route was assessed"
-                   if "ai-memory" in str(exc).lower() else
+                   "ai-memory prerequisite failed; no eligible route"
+                   if exc is locals().get("memory_prerequisite_error")
+                   or "ai-memory" in str(exc).lower() else
                    "OpenRouter catalog blocker: incomplete or invalid catalog"
                    if "catalog" in str(exc).lower() else
                    "mandatory quota, catalog, credential, or Jev routing check failed")
@@ -3286,6 +3550,8 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
                     # Redacted, bounded cause so a blocked route can be diagnosed without a debugger.
                     error_detail=_safe_text(str(exc), 300))
         return {**data, "owner_token": owner_token}
+    if any(candidate.get("cli") == "agy" for candidate in candidates):
+        route_warnings.append(AGY_MEMORY_WARNING)
     if not candidates:
         repo_lock.close()
         _transition(data, "blocked", "task_blocked", "Jev found no suitable eligible route",
