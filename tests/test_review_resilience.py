@@ -40,7 +40,7 @@ def run_worker(routes, outcomes):
     return run
 
 
-def test_agy_worker_quota_failure_stops_without_another_route():
+def test_argon_429_keeps_flash_eligible_in_worker():
     routes = [route("agy", "gemini-4-argon-medium"),
               route("agy", "gemini-4-argon-low"),
               route("agy", "gemini-3.8-flash-low")]
@@ -48,8 +48,9 @@ def test_agy_worker_quota_failure_stops_without_another_route():
         {"outcome": "quota_limited", "ai_memory": MEMORY},
         {"outcome": "account_stop", "ai_memory": MEMORY},
     ])
-    assert [call.args[0]["model"] for call in run.call_args_list] == ["gemini-4-argon-medium"]
-    assert run.call_args.kwargs["memory_mode"] == "standalone"
+    assert [call.args[0]["model"] for call in run.call_args_list] == [
+        "gemini-4-argon-medium", "gemini-3.8-flash-low",
+    ]
 
 
 @pytest.mark.parametrize("cli", ["codex", "kimi"])
@@ -62,7 +63,7 @@ def test_non_agy_429_remains_account_wide(cli):
     assert [call.args[0] for call in run.call_args_list] == [routes[0], routes[2]]
 
 
-def test_agy_review_quota_failure_stops_review_rotation():
+def test_argon_429_keeps_flash_eligible_in_review():
     routes = [route("agy", "gemini-4-argon-medium"),
               route("agy", "gemini-3.8-flash-low"),
               route("kimi", "kimi-code/k3.1-pro", "other")]
@@ -79,10 +80,13 @@ def test_agy_review_quota_failure_stops_review_rotation():
                           return_value=(f"Code task {task_id} attempt 2", 1)) as read_context, \
              patch.object(tm, "_jev_handoff") as handoff:
             result = tm._external_verification(task_id, Path(temp), "review", [], routes, routes[0], None, 2)
-    assert [call.args[0]["model"] for call in run.call_args_list] == ["gemini-4-argon-medium"]
-    assert run.call_args.kwargs["memory_mode"] == "managed"  # launcher enforces AGY's standalone policy
-    assert not result["complete"]
-    read_context.assert_not_called()
+    assert [call.args[0]["model"] for call in run.call_args_list] == [
+        "gemini-4-argon-medium", "gemini-3.8-flash-low", "kimi-code/k3.1-pro",
+    ]
+    assert result["passed"]
+    read_context.assert_called_once_with(
+        Path(temp), MEMORY["workstream_id"],
+        required_marker=f"Code task {task_id} attempt 2")
     handoff.assert_not_called()
 
 

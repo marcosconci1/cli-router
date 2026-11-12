@@ -1161,7 +1161,7 @@ class PolicyTests(unittest.TestCase):
             finally:
                 tm._root = old_root
 
-    def test_memory_outage_without_agy_blocks_before_jev_assessment(self):
+    def test_memory_outage_blocks_before_quota_or_jev_assessment(self):
         import subprocess
         import tempfile
         from unittest.mock import patch
@@ -1173,9 +1173,7 @@ class PolicyTests(unittest.TestCase):
                 with patch.object(tm, "_ai_memory_mode", return_value="enabled"), \
                      patch.object(tm.ai_memory_bridge, "verify_runtime",
                                   side_effect=tm.ai_memory_bridge.AiMemoryError("ai-memory server unavailable")), \
-                     patch.object(tm, "_quota", return_value={"fresh": True, "cache": {"providers": {}}}), \
-                     patch.object(tm, "_installed_models", return_value={}), \
-                     patch.object(tm, "_subscriptions", return_value=[]), \
+                     patch.object(tm, "_quota", side_effect=AssertionError("quota ran during memory outage")), \
                      patch.object(tm, "_jev_choose", side_effect=AssertionError("Jev ran during memory outage")):
                     result = tm.dispatch({"action": "submit", "repository": str(repo), "task": "inspect",
                                           "mode": "analysis",
@@ -1819,9 +1817,8 @@ class PolicyTests(unittest.TestCase):
             self.assertNotIn(str(home / "site/.env"), blanked)  # the repository's own .env stays
             self.assertIn(str(home / ".local/share/ai-memory/hook-spool"), masked)
             agy = tm._secret_masks("agy", repo, home, home)
-            self.assertIn(str(home / ".local/share/ai-memory/auth-token"), agy)
-            self.assertIn(str(home / ".config/ai-memory/client.env"), agy)
-            self.assertIn("--tmpfs", agy)
+            self.assertNotIn(str(home / ".local/share/ai-memory/auth-token"), agy)  # its hooks need it
+            self.assertNotIn("--tmpfs", agy)
             self.assertIn(str(home / ".hermes/.env"), agy)
 
 if __name__ == "__main__":

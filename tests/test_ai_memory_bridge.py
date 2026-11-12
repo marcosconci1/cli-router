@@ -185,13 +185,19 @@ class AiMemoryBridgeTests(unittest.TestCase):
                 return page
             raise AssertionError(args)
 
+        marker = f"Code task {task_id} attempt 1"
         with patch.object(bridge, "_command", side_effect=command):
-            packet, sequence = bridge.read_context(Path("/repo"), "a" * 36)
+            packet, sequence = bridge.read_context(Path("/repo"), "a" * 36, required_marker=marker)
         self.assertTrue(bridge.context_is_safe(packet))
-        self.assertIn(f"Code task {task_id} attempt 1", packet)
+        self.assertIn(marker, packet)
         self.assertIn("HEAD: abc", packet)
         self.assertEqual(sequence, 1)
         self.assertIn(["read-page", "--path", f"sessions/{session_id}.md"], calls)
+
+        # Non-matching marker still fails closed
+        with patch.object(bridge, "_command", side_effect=command):
+            with self.assertRaises(bridge.AiMemoryError):
+                bridge.read_context(Path("/repo"), "a" * 36, required_marker="Code task other attempt 1")
 
     def test_read_context_rejects_empty_ledger(self):
         with patch.object(bridge, "_command", return_value="[]"):
