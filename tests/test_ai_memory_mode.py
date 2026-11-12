@@ -116,18 +116,18 @@ class AiMemoryModeTests(unittest.TestCase):
         blocked = next(e for e in data["events"] if e["event"] == "task_blocked")
         self.assertEqual(blocked.get("error_class", data.get("error_class")), "SyntheticMemoryError")
 
-    def test_enabled_ai_memory_outage_can_still_route_standalone_agy(self):
+    def test_enabled_ai_memory_outage_blocks_even_with_agy(self):
+        class SyntheticMemoryError(RuntimeError):
+            pass
         result, data, verify = self._submit(
-            "enabled", RuntimeError("ai-memory server unavailable"), cli="agy")
-        self.assertEqual(result["state"], "queued")
-        self.assertEqual(data["candidate_count"], 1)
-        self.assertTrue(any("only AGY standalone no-memory attempts" in warning
-                            for warning in data["route_warnings"]))
-        self.assertTrue(any("AGY runs without managed ai-memory" in warning
-                            for warning in data["route_warnings"]))
+            "enabled", SyntheticMemoryError("ai-memory server unavailable"), cli="agy")
+        self.assertEqual(result["state"], "blocked")
+        self.assertIn("ai-memory prerequisite failed", result["message"])
         verify.assert_called_once()
+        blocked = next(e for e in data["events"] if e["event"] == "task_blocked")
+        self.assertEqual(blocked.get("error_class", data.get("error_class")), "SyntheticMemoryError")
 
-    def test_enabled_memory_outage_routes_unpinned_only_to_agy(self):
+    def test_enabled_unpinned_memory_outage_fails_closed(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -146,39 +146,6 @@ class AiMemoryModeTests(unittest.TestCase):
              patch.object(tm.ai_memory_bridge, "verify_runtime", side_effect=RuntimeError("synthetic outage")), \
              patch.object(tm, "_quota", return_value=quota), \
              patch.object(tm, "_subscriptions", return_value=[codex, agy]), \
-             patch.object(tm, "_installed_models", return_value={}), \
-             patch.object(tm, "_candidate_has_quota", return_value=True), \
-             patch.object(tm, "_provider_toggles", return_value={"agy": True, "codex": True, "opencode": True}), \
-             patch.object(tm, "_free_models", side_effect=AssertionError("managed fallback assessed during outage")), \
-             patch.object(tm, "_jev_choose", side_effect=lambda _task, candidates, **_kwargs: candidates), \
-             patch.object(tm.threading.Thread, "start", return_value=None):
-            result = tm.dispatch({"action": "submit", "repository": str(repo), "task": "inspect",
-                                  "mode": "analysis", "acceptance_criteria": [{"type": "file_exists",
-                                                                                  "path": "README.md"}]})
-            data = tm._read(result["task_id"]) if result.get("task_id") else None
-
-        self.assertEqual(result["state"], "queued")
-        self.assertEqual(data["candidate_count"], 1)
-        self.assertTrue(any("only AGY standalone" in warning for warning in data["route_warnings"]))
-        self.assertTrue(data["degraded"])
-
-    def test_enabled_unpinned_memory_outage_fails_closed_without_agy(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name)
-        repo = root / "repo"
-        repo.mkdir()
-        codex = {"cli": "codex", "provider": "openai-codex", "model": "gpt-6-luna", "effort": "low"}
-        quota = {"fresh": True, "cache": {"providers": {}}}
-        with patch.object(tm, "_root", return_value=root / "state"), \
-             patch.object(tm, "_repo", return_value=repo), \
-             patch.object(tm, "_repo_key", return_value="repo-key"), \
-             patch.object(tm, "_lock_path", return_value=root / "repo.lock"), \
-             patch.object(tm, "_recover_orphaned_tasks"), \
-             patch.object(tm, "_ai_memory_mode", return_value="enabled"), \
-             patch.object(tm.ai_memory_bridge, "verify_runtime", side_effect=RuntimeError("synthetic outage")), \
-             patch.object(tm, "_quota", return_value=quota), \
-             patch.object(tm, "_subscriptions", return_value=[codex]), \
              patch.object(tm, "_installed_models", return_value={}), \
              patch.object(tm, "_candidate_has_quota", return_value=True), \
              patch.object(tm.threading.Thread, "start", return_value=None):

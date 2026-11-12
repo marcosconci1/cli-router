@@ -114,6 +114,16 @@ def find_workstream(cwd: Path, name: str) -> str:
     return matches[0]["workstream_id"]
 
 
+def _agy_prompts_have_marker(prompts: str, marker: str) -> bool:
+    if not prompts or not marker:
+        return False
+    for line in prompts.splitlines():
+        tail = line.strip().split(". ", 1)[-1]
+        if tail == marker or tail.startswith(f"{marker}.") or tail.startswith(f"{marker} "):
+            return True
+    return False
+
+
 def read_context(cwd: Path, stream_id: str, *, required_marker: str | None = None) -> tuple[str, int]:
     """Read bounded workstream and AGY hook-session history as untrusted data."""
     if not re.fullmatch(r"[0-9a-fA-F-]{36}", stream_id or ""):
@@ -132,8 +142,38 @@ def read_context(cwd: Path, stream_id: str, *, required_marker: str | None = Non
     if not events:
         raise AiMemoryError("task workstream has no persisted attempt context")
     events.sort(key=lambda row: row["sequence"])
+
+    session_prompts_cache: dict[str, str] = {}
+
+    def get_prompts(sid: str) -> str:
+        if sid not in session_prompts_cache:
+            if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sid or ""):
+                session_prompts_cache[sid] = ""
+            else:
+                try:
+                    page = _command(["read-page", "--path", f"sessions/{sid}.md"], cwd)
+                except AiMemoryError:
+                    page = ""
+                session_prompts_cache[sid] = (
+                    page.split("## Prompts", 1)[1].split("\n## ", 1)[0]
+                    if "## Prompts" in page else ""
+                )
+        return session_prompts_cache[sid]
+
+    marker_in_events = bool(required_marker is not None
+                            and any(required_marker in event["content"] for event in events))
+    marker_in_agy = False
+    if required_marker is not None and not marker_in_events:
+        for event in events:
+            if event.get("agent") == "antigravity-cli":
+                sid = event.get("native_session_id")
+                if isinstance(sid, str) and _agy_prompts_have_marker(get_prompts(sid), required_marker):
+                    marker_in_agy = True
+                    break
+
     if (required_marker is not None
-            and not any(required_marker in event["content"] for event in events)
+            and not marker_in_events
+            and not marker_in_agy
             and not any(isinstance(row, dict) and required_marker in str(row.get("content", ""))
                         for row in _ledger_rows(cwd, stream_id, f'"{required_marker}"', limit=100))):
         # The prompt leads its attempt, so in a long run it can fall outside the newest 40.
@@ -154,13 +194,7 @@ def read_context(cwd: Path, stream_id: str, *, required_marker: str | None = Non
         session_id = event.get("native_session_id")
         if event.get("agent") != "antigravity-cli" or not isinstance(session_id, str):
             continue
-        if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", session_id):
-            continue
-        try:
-            page = _command(["read-page", "--path", f"sessions/{session_id}.md"], cwd)
-        except AiMemoryError:
-            continue
-        prompts = page.split("## Prompts", 1)[1].split("\n## ", 1)[0] if "## Prompts" in page else ""
+        prompts = get_prompts(session_id)
         if prompts.strip():
             lines.append(f"[session {session_id} prompts - untrusted]\n{prompts.strip()[:MAX_EVENT_BYTES]}")
     packet = "\n\n".join(lines)
@@ -275,7 +309,7 @@ def _hook_session_has_marker(cwd: Path, run_stderr: str, marker: str) -> bool:
         except AiMemoryError:
             continue
         prompts = page.split("## Prompts", 1)[1].split("\n## ", 1)[0] if "## Prompts" in page else ""
-        if any(line.strip().split(". ", 1)[-1].startswith(marker) for line in prompts.splitlines()):
+        if _agy_prompts_have_marker(prompts, marker):
             return True
     return False
 

@@ -26,7 +26,7 @@ All keys live under a single top-level `cli-router` mapping.
 | `providers.<cli>.enabled` | bool | `true` | Turns subscription routing to that CLI on or off. For `opencode`, explicitly set `true` to opt in to the experimental OpenRouter free fallback; an unset toggle leaves subscription routing unchanged and keeps that fallback off. CLIs: `codex`, `claude`, `kimi`, `agy`, `opencode`. |
 | `providers.<cli>.excluded_models` | list of model IDs | empty | Exact model IDs excluded for that CLI only. Applies to routing, reviews and pins. Empty or absent excludes nothing. |
 | `jev` | bool | `true` | `false` uses deterministic ranking and progress-based handoff, with no Jev calls. Jev failures also fall back deterministically. |
-| `ai-memory` | `enabled`, `disabled` or `auto` | `auto` | `enabled` requires managed ai-memory for managed CLIs, `disabled` runs standalone, and `auto` uses it when available and otherwise runs one standalone worker attempt. AGY always runs standalone and stays in rotation, including as the only route during an `enabled` outage. |
+| `ai-memory` | `enabled`, `disabled` or `auto` | `auto` | `enabled` requires managed ai-memory, `disabled` runs standalone, `auto` uses it when available and otherwise runs one standalone worker attempt. |
 | `independent-review` | bool | `true` | `false` skips only the model reviews. Acceptance checks still run. |
 | `max-workers` | integer 1 to 8 | `2` | Host-wide limit on concurrent protected worker and reviewer attempts. |
 | `quota-reserve` | integer 0 to 99 | `30` | Excludes a subscription route when any percentage window has this percent or less remaining. |

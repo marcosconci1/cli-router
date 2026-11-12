@@ -22,8 +22,6 @@ Standalone reviews have no ledger confirmation. A failed managed attempt confirm
 
 The router treats ai-memory as chosen under `enabled` or `auto`, or when an installed CLI is available under implicit `auto`. Explicit `disabled` wins. A supported direct plugin setting also counts.
 
-AGY stays in Jev's rotation but always runs standalone, without managed ai-memory, because ai-memory does not yet record AGY prompts. Its ai-memory MCP and hook entries are filtered out of the sandboxed configuration on a best-effort basis; this is a routing policy, not a security boundary (see [sandbox](sandbox.md)). During an `enabled` ai-memory outage only AGY routes remain eligible; other CLIs keep their managed-memory prerequisite.
-
 ## Install and start ai-memory
 
 Use the [upstream installation cookbook](https://github.com/akitaonrails/ai-memory/blob/main/docs/install.md). Its installer owns the service, hooks, MCP wiring, and agent configuration it creates. Review its effects before applying it.
