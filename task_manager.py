@@ -70,6 +70,7 @@ except ImportError:
         ai_memory_bridge = None
 try:
     from . import diagnostic_journal, doctor, hermes_adapter, problems, quota, route_benchmark, worker_resources
+    from . import notify
 except ImportError:
     import diagnostic_journal
     import doctor
@@ -78,6 +79,7 @@ except ImportError:
     import quota
     import route_benchmark
     import worker_resources
+    import notify
 
 
 def _root() -> Path:
@@ -203,7 +205,8 @@ def _validate_modular_config(payload: Any, path: Path) -> dict[str, Any]:
     cfg = payload["cli-router"]
     if cfg is None:
         cfg = {}
-    allowed = {"providers", "jev", "ai-memory", "independent-review", "max-workers", "quota-reserve"}
+    allowed = {"providers", "jev", "ai-memory", "independent-review", "max-workers", "quota-reserve",
+               "notify-errors", "progress-updates"}
     if not isinstance(cfg, dict) or set(cfg) - allowed:
         raise ConfigurationError(f"{path}: cli-router must be a mapping with supported settings")
     providers = cfg.get("providers", {})
@@ -226,6 +229,9 @@ def _validate_modular_config(payload: Any, path: Path) -> dict[str, Any]:
         if not isinstance(models, list) or any(not isinstance(model, str) or not model for model in models):
             raise ConfigurationError(f"{path}: providers.{cli}.excluded_models must be a list of model IDs")
     for key in ("jev", "independent-review"):
+        if key in cfg and not isinstance(cfg[key], bool):
+            raise ConfigurationError(f"{path}: {key} must be true or false")
+    for key in ("notify-errors", "progress-updates"):
         if key in cfg and not isinstance(cfg[key], bool):
             raise ConfigurationError(f"{path}: {key} must be true or false")
     if "ai-memory" in cfg and (not isinstance(cfg["ai-memory"], str)
@@ -327,6 +333,27 @@ def _quota_reserve() -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 99:
         return DEFAULT_QUOTA_RESERVE
     return value
+
+
+def _notify_setting(key: str) -> bool:
+    try:
+        modular = _load_modular_config()
+    except Exception:
+        return True
+    value = modular.get(key, _hermes_setting(key))
+    return value if isinstance(value, bool) else True
+
+
+def _notify_error_if_needed(data: dict[str, Any]) -> None:
+    if data.get("state") not in {"blocked", "failed_verification"} or not _notify_setting("notify-errors"):
+        return
+    message = _safe_text(notify.post_error(data), 500)
+    try:
+        if hermes_adapter.post_and_edit(message, data.get("task_id")) is not None:
+            data["error_notified"] = True
+            _write(str(data.get("task_id", "")), data)
+    except Exception as exc:
+        _record_route_warning(data.get("task_id"), "notification", exc, data)
 
 
 def _task_dir() -> Path:
@@ -1185,7 +1212,9 @@ def _record_route_warning(task_id: str | None, purpose: str, error: Exception,
     data = in_memory_data if in_memory_data is not None else _read(task_id)
     if not data:
         return
-    message = f"Jev {purpose} ranking failed ({type(error).__name__}); deterministic benchmark fallback used"
+    message = (f"notification delivery failed ({type(error).__name__})"
+               if purpose == "notification" else
+               f"Jev {purpose} ranking failed ({type(error).__name__}); deterministic benchmark fallback used")
     events = data.get("events") if isinstance(data.get("events"), list) else []
     events.append({"at": _stamp(), "event": "route_warning", "message": message})
     data["events"] = events[-MAX_TASK_EVENTS:]
@@ -3094,6 +3123,11 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
                     or not math.isfinite(timeout) or not 0 <= timeout <= 300):
                 return {"ok": False, "error": "timeout_seconds must be between 0 and 300"}
             deadline = time.monotonic() + timeout
+            progress_handle = None
+            last_phase = None
+            if _notify_setting("progress-updates"):
+                progress_handle = hermes_adapter.post_and_edit(_safe_text(notify.progress(data), 500), task_id)
+                last_phase = data.get("phase")
             with _STATE_CHANGED:
                 while data.get("state") in _ACTIVE_STATES:
                     remaining = deadline - time.monotonic()
@@ -3101,6 +3135,17 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
                         break
                     _STATE_CHANGED.wait(remaining)
                     data = _read(task_id) or data
+                    if progress_handle is not None and data.get("phase") != last_phase:
+                        try:
+                            progress_handle.edit(_safe_text(notify.progress(data), 500))
+                            last_phase = data.get("phase")
+                        except Exception as exc:
+                            _record_route_warning(task_id, "notification", exc, data)
+                            progress_handle = None
+            if data.get("state") in {"blocked", "failed_verification"} and not data.get("error_notified"):
+                _notify_error_if_needed(data)
+        elif data.get("state") in {"blocked", "failed_verification"} and not data.get("error_notified"):
+            _notify_error_if_needed(data)
         return _status_view(data, args.get("include_history") is True)
     if action == "cancel":
         task_id = str(args.get("task_id", ""))
@@ -3261,6 +3306,7 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
                             f"route pin matched no eligible candidate; installed options: {', '.join(unmatched) or 'none'}",
                             state="blocked", finished_at=_stamp(), candidate_count=0,
                             route_warnings=["route pin matched nothing"])
+                _notify_error_if_needed(data)
                 return {**data, "owner_token": owner_token}
             subscription_ranked = pinned
             free_candidates = []
@@ -3318,12 +3364,14 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
                     error_class=type(exc).__name__,
                     # Redacted, bounded cause so a blocked route can be diagnosed without a debugger.
                     error_detail=_safe_text(str(exc), 300))
+        _notify_error_if_needed(data)
         return {**data, "owner_token": owner_token}
     if not candidates:
         repo_lock.close()
         _transition(data, "blocked", "task_blocked", "Jev found no suitable eligible route",
                     state="blocked", finished_at=_stamp(), candidate_count=0,
                     route_warnings=locals().get("route_warnings", []))
+        _notify_error_if_needed(data)
         return {**data, "owner_token": owner_token}
     _transition(data, "queued", "routing_finished", "task accepted; use cli_router status to follow progress",
                 state="queued", candidate_count=len(candidates), route_warnings=route_warnings)
@@ -3344,6 +3392,7 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         repo_lock.close()
         _transition(data, "blocked", "worker_start_failed", "could not start the worker thread",
                     state="blocked", finished_at=_stamp(), error_class=type(exc).__name__)
+        _notify_error_if_needed(data)
         raise
     return {"task_id": task_id, "owner_token": owner_token, "state": "queued", "phase": "queued",
             "repository": str(repo), "mode": mode, "candidate_count": len(candidates),

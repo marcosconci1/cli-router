@@ -30,3 +30,7 @@ cli-router:
   max-workers: 2
   # Exclude a subscription route when any window has this percent or less remaining; default 30.
   quota-reserve: 30
+  # Send one message when a task is blocked or fails verification.
+  notify-errors: true
+  # Post a wait message and edit it as task phases change.
+  progress-updates: true

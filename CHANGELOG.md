@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.0
+
+- Add compact Hermes error notices for blocked and failed-verification tasks.
+- Add editable wait progress updates and configurable notification settings.
+
 ## 0.8.0
 
 - Full ai-memory integration for Antigravity (AGY): verify attempt markers directly against hook-captured session pages, enabling managed memory handoffs and cross-attempt repair rotation for AGY.

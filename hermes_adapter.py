@@ -26,6 +26,24 @@ def has_context() -> bool:
     return _CONTEXT is not None
 
 
+def post_and_edit(text: str, task_id: str | None = None) -> Any | None:
+    """Post a message without allowing Hermes failures to affect task dispatch."""
+    if _CONTEXT is None:
+        return None
+    try:
+        result = _CONTEXT.post_message(text)
+        if result is None or result is False or getattr(result, "refused", False):
+            return None
+        return result
+    except Exception as exc:
+        try:
+            import task_manager
+            task_manager._record_route_warning(task_id, "notification", exc)
+        except Exception:
+            pass
+        return None
+
+
 def get_config(name: str, default: Any = None) -> Any:
     if _CONTEXT is None:
         raise RuntimeError("Jev plugin context is unavailable")

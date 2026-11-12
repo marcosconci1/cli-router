@@ -21,6 +21,86 @@ class PolicyTests(unittest.TestCase):
         tm.route_benchmark._CACHE.update(at=time.time(), index={"models": {}, "max_coding": 0,
                                                                  "max_intelligence": 0})
 
+    def test_notify_blocked_terminal_task_posts_once(self):
+        class Handle:
+            def __init__(self): self.edits = []
+            def edit(self, text): self.edits.append(text)
+        class Context:
+            def __init__(self): self.posts = []
+            def post_message(self, text):
+                handle = Handle(); self.posts.append((text, handle)); return handle
+        ctx = Context()
+        data = {"task_id": "a" * 32, "state": "blocked", "phase": "blocked",
+                "owner_hash": "unused", "error_detail": "no route", "created_at": "2026-01-01T00:00:00+00:00"}
+        with patch.object(tm.hermes_adapter, "_CONTEXT", ctx), \
+             patch.object(tm, "_read", return_value=data), \
+             patch.object(tm, "_owns", return_value=True), \
+             patch.object(tm, "_load_modular_config", return_value={"notify-errors": True}), \
+             patch.object(tm, "_write") as write, patch.object(tm, "_status_view", return_value={"state": "blocked"}):
+            tm.dispatch({"action": "status", "task_id": data["task_id"], "owner_token": "owner"})
+            tm.dispatch({"action": "status", "task_id": data["task_id"], "owner_token": "owner"})
+        self.assertEqual(len(ctx.posts), 1)
+        self.assertIn("router/TASK_FAILED", ctx.posts[0][0])
+
+    def test_notify_completed_and_missing_context_do_not_post(self):
+        class Context:
+            def __init__(self): self.posts = []
+            def post_message(self, text): self.posts.append(text); return object()
+        ctx = Context()
+        for state, context in (("completed", ctx), ("blocked", None)):
+            data = {"task_id": "b" * 32, "state": state, "owner_hash": "unused"}
+            with patch.object(tm.hermes_adapter, "_CONTEXT", context), \
+                 patch.object(tm, "_read", return_value=data), patch.object(tm, "_owns", return_value=True), \
+                 patch.object(tm, "_load_modular_config", return_value={"notify-errors": True}), \
+                 patch.object(tm, "_status_view", return_value={"state": state}):
+                tm.dispatch({"action": "status", "task_id": data["task_id"], "owner_token": "owner"})
+        self.assertEqual(ctx.posts, [])
+
+    def test_notify_disabled_does_not_post(self):
+        class Context:
+            def __init__(self): self.posts = []
+            def post_message(self, text): self.posts.append(text); return object()
+        ctx = Context()
+        data = {"task_id": "e" * 32, "state": "blocked", "owner_hash": "unused"}
+        with patch.object(tm.hermes_adapter, "_CONTEXT", ctx), patch.object(tm, "_read", return_value=data), \
+             patch.object(tm, "_owns", return_value=True), \
+             patch.object(tm, "_load_modular_config", return_value={"notify-errors": False}), \
+             patch.object(tm, "_status_view", return_value={"state": "blocked"}):
+            tm.dispatch({"action": "status", "task_id": data["task_id"], "owner_token": "owner"})
+        self.assertEqual(ctx.posts, [])
+
+    def test_post_handler_failure_records_warning_without_raising(self):
+        class Context:
+            def post_message(self, text): raise RuntimeError("transport down")
+        with patch.object(tm.hermes_adapter, "_CONTEXT", Context()), \
+             patch.object(tm, "_record_route_warning") as warning:
+            self.assertIsNone(tm.hermes_adapter.post_and_edit("notice", "c" * 32))
+        warning.assert_called_once()
+
+    def test_progress_wait_posts_once_and_edits_same_handle_on_phase_change(self):
+        class Handle:
+            def __init__(self): self.edits = []
+            def edit(self, text): self.edits.append(text)
+        class Context:
+            def __init__(self): self.posts = []
+            def post_message(self, text):
+                handle = Handle(); self.posts.append((text, handle)); return handle
+        ctx = Context()
+        tid = "d" * 32
+        active = {"task_id": tid, "state": "running", "phase": "worker", "owner_hash": "unused",
+                  "created_at": "2026-01-01T00:00:00+00:00", "current_attempt": 1}
+        terminal = {**active, "state": "completed", "phase": "completed"}
+        reads = iter((active, terminal))
+        with patch.object(tm.hermes_adapter, "_CONTEXT", ctx), patch.object(tm, "_read", side_effect=lambda _: next(reads)), \
+             patch.object(tm, "_owns", return_value=True), \
+             patch.object(tm, "_load_modular_config", return_value={"progress-updates": True, "notify-errors": False}), \
+             patch.object(tm._STATE_CHANGED, "wait", return_value=None), patch.object(tm, "_write"), \
+             patch.object(tm, "_status_view", return_value={"state": "completed"}):
+            tm.dispatch({"action": "wait", "task_id": tid, "owner_token": "owner", "timeout_seconds": 0.1})
+        self.assertEqual(len(ctx.posts), 1)
+        self.assertEqual(len(ctx.posts[0][1].edits), 1)
+        self.assertIn("completed", ctx.posts[0][1].edits[0])
+
     def test_review_routing_uses_cost_then_quality_objectives(self):
         requests = []
         class Context:
