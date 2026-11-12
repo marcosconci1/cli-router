@@ -30,6 +30,8 @@ All keys live under a single top-level `cli-router` mapping.
 | `independent-review` | bool | `true` | `false` skips only the model reviews. Acceptance checks still run. |
 | `max-workers` | integer 1 to 8 | `2` | Host-wide limit on concurrent protected worker and reviewer attempts. |
 | `quota-reserve` | integer 0 to 99 | `30` | Excludes a subscription route when any percentage window has this percent or less remaining. |
+| `notify-errors` | bool | `true` | Sends a compact notice when a task is blocked or fails verification. |
+| `progress-updates` | bool | `true` | Posts one wait message and edits it as the task phase changes. |
 
 ai-memory defaults to `auto`. An installed CLI counts as chosen under implicit `auto`; explicit `disabled` wins. Jev is chosen when `jev: true` or cli-router's own `settings.connection` is configured. The example leaves both keys commented. Existing Hermes installations can still have an active ai-memory CLI under `auto`.
 

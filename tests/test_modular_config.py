@@ -257,6 +257,19 @@ def test_valid_nested_providers_with_comments_and_blanks_still_parse():
         "jev": False}}
 
 
+@pytest.mark.parametrize("value", ["true", "false"])
+def test_notification_settings_accept_booleans(tmp_path, value):
+    config = write_config(tmp_path, f"cli-router:\n  notify-errors: {value}\n  progress-updates: {value}\n")
+    with config:
+        assert tm._load_modular_config() == {"notify-errors": value == "true", "progress-updates": value == "true"}
+
+
+@pytest.mark.parametrize("key", ["notify-errors", "progress-updates"])
+def test_notification_settings_reject_non_booleans(key):
+    with pytest.raises(tm.ConfigurationError, match=f"{key} must be true or false"):
+        tm._validate_modular_config({"cli-router": {key: "yes"}}, Path("cli-router.yaml"))
+
+
 def _workers(tmp_path, body, hermes=None):
     text = "cli-router:\n" + body if body is not None else None
     if text is None:
