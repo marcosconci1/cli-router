@@ -51,15 +51,17 @@ class AiMemoryModeTests(unittest.TestCase):
                  patch.object(hermes_adapter, "get_config", return_value={"ai-memory": expected}):
                 self.assertEqual(tm._ai_memory_mode(), expected)
 
-    def _submit(self, configured_mode, verify_side_effect=None):
+    def _submit(self, configured_mode, verify_side_effect=None, cli="codex"):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         repo = root / "repo"
         repo.mkdir()
         state = root / "state"
-        candidate = {"cli": "codex", "provider": "openai-codex", "model": "gpt-6-luna",
-                     "effort": "low"}
+        candidate = ({"cli": "agy", "provider": "antigravity", "model": "gemini-3.8-flash-low",
+                      "effort": "low"} if cli == "agy" else
+                     {"cli": "codex", "provider": "openai-codex", "model": "gpt-6-luna",
+                      "effort": "low"})
         quota = {"fresh": True, "cache": {"providers": {}}}
         verify = patch.object(tm.ai_memory_bridge, "verify_runtime", side_effect=verify_side_effect)
         self.addCleanup(verify.stop)
@@ -76,7 +78,7 @@ class AiMemoryModeTests(unittest.TestCase):
              patch.object(tm, "_candidate_has_quota", return_value=True), \
              patch.object(tm.threading.Thread, "start", return_value=None):
             result = tm.dispatch({"action": "submit", "repository": str(repo), "task": "inspect",
-                                  "mode": "analysis", "cli": "codex",
+                                  "mode": "analysis", "cli": candidate["cli"],
                                   "acceptance_criteria": [{"type": "file_exists", "path": "README.md"}]})
             data = tm._read(result["task_id"]) if result.get("task_id") else None
         return result, data, verify_mock
@@ -103,6 +105,89 @@ class AiMemoryModeTests(unittest.TestCase):
         self.assertEqual(result["state"], "blocked")
         self.assertIn("ai-memory prerequisite failed", result["message"])
         verify.assert_called_once()
+
+    def test_enabled_outage_without_agy_keeps_original_cause(self):
+        class SyntheticMemoryError(RuntimeError):
+            pass
+        result, data, verify = self._submit(
+            "enabled", SyntheticMemoryError("ai-memory server health unavailable"))
+        self.assertEqual(result["state"], "blocked")
+        self.assertIn("ai-memory prerequisite failed", result["message"])
+        blocked = next(e for e in data["events"] if e["event"] == "task_blocked")
+        self.assertEqual(blocked.get("error_class", data.get("error_class")), "SyntheticMemoryError")
+
+    def test_enabled_ai_memory_outage_can_still_route_standalone_agy(self):
+        result, data, verify = self._submit(
+            "enabled", RuntimeError("ai-memory server unavailable"), cli="agy")
+        self.assertEqual(result["state"], "queued")
+        self.assertEqual(data["candidate_count"], 1)
+        self.assertTrue(any("only AGY standalone no-memory attempts" in warning
+                            for warning in data["route_warnings"]))
+        self.assertTrue(any("AGY runs without managed ai-memory" in warning
+                            for warning in data["route_warnings"]))
+        verify.assert_called_once()
+
+    def test_enabled_memory_outage_routes_unpinned_only_to_agy(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        repo = root / "repo"
+        repo.mkdir()
+        agy = {"cli": "agy", "provider": "antigravity", "model": "gemini-3.8-flash-low",
+               "effort": "low"}
+        codex = {"cli": "codex", "provider": "openai-codex", "model": "gpt-6-luna", "effort": "low"}
+        quota = {"fresh": True, "cache": {"providers": {}}}
+        with patch.object(tm, "_root", return_value=root / "state"), \
+             patch.object(tm, "_repo", return_value=repo), \
+             patch.object(tm, "_repo_key", return_value="repo-key"), \
+             patch.object(tm, "_lock_path", return_value=root / "repo.lock"), \
+             patch.object(tm, "_recover_orphaned_tasks"), \
+             patch.object(tm, "_ai_memory_mode", return_value="enabled"), \
+             patch.object(tm.ai_memory_bridge, "verify_runtime", side_effect=RuntimeError("synthetic outage")), \
+             patch.object(tm, "_quota", return_value=quota), \
+             patch.object(tm, "_subscriptions", return_value=[codex, agy]), \
+             patch.object(tm, "_installed_models", return_value={}), \
+             patch.object(tm, "_candidate_has_quota", return_value=True), \
+             patch.object(tm, "_provider_toggles", return_value={"agy": True, "codex": True, "opencode": True}), \
+             patch.object(tm, "_free_models", side_effect=AssertionError("managed fallback assessed during outage")), \
+             patch.object(tm, "_jev_choose", side_effect=lambda _task, candidates, **_kwargs: candidates), \
+             patch.object(tm.threading.Thread, "start", return_value=None):
+            result = tm.dispatch({"action": "submit", "repository": str(repo), "task": "inspect",
+                                  "mode": "analysis", "acceptance_criteria": [{"type": "file_exists",
+                                                                                  "path": "README.md"}]})
+            data = tm._read(result["task_id"]) if result.get("task_id") else None
+
+        self.assertEqual(result["state"], "queued")
+        self.assertEqual(data["candidate_count"], 1)
+        self.assertTrue(any("only AGY standalone" in warning for warning in data["route_warnings"]))
+        self.assertTrue(data["degraded"])
+
+    def test_enabled_unpinned_memory_outage_fails_closed_without_agy(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        repo = root / "repo"
+        repo.mkdir()
+        codex = {"cli": "codex", "provider": "openai-codex", "model": "gpt-6-luna", "effort": "low"}
+        quota = {"fresh": True, "cache": {"providers": {}}}
+        with patch.object(tm, "_root", return_value=root / "state"), \
+             patch.object(tm, "_repo", return_value=repo), \
+             patch.object(tm, "_repo_key", return_value="repo-key"), \
+             patch.object(tm, "_lock_path", return_value=root / "repo.lock"), \
+             patch.object(tm, "_recover_orphaned_tasks"), \
+             patch.object(tm, "_ai_memory_mode", return_value="enabled"), \
+             patch.object(tm.ai_memory_bridge, "verify_runtime", side_effect=RuntimeError("synthetic outage")), \
+             patch.object(tm, "_quota", return_value=quota), \
+             patch.object(tm, "_subscriptions", return_value=[codex]), \
+             patch.object(tm, "_installed_models", return_value={}), \
+             patch.object(tm, "_candidate_has_quota", return_value=True), \
+             patch.object(tm.threading.Thread, "start", return_value=None):
+            result = tm.dispatch({"action": "submit", "repository": str(repo), "task": "inspect",
+                                  "mode": "analysis", "acceptance_criteria": [{"type": "file_exists",
+                                                                                  "path": "README.md"}]})
+
+        self.assertEqual(result["state"], "blocked")
+        self.assertIn("ai-memory prerequisite failed", result["message"])
 
     def test_standalone_candidate_runs_raw_cli_without_memory_auth_or_wrapper(self):
         with tempfile.TemporaryDirectory() as temporary, \

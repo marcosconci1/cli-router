@@ -7,6 +7,23 @@ import pytest
 import task_manager as tm
 
 
+@pytest.mark.parametrize("text,secret", [
+    ('{"token":"fixture-json"}', "fixture-json"),
+    ('token="fixture spaced secret"', "fixture spaced secret"),
+    ('{"outer":{"credentials":{"api_key":"nested fixture secret"}}}', "nested fixture secret"),
+    ("service access_token=fixture-unquoted-secret, ok", "fixture-unquoted-secret"),
+    ("private-key: fixture-private-key", "fixture-private-key"),
+])
+def test_safe_text_redacts_structured_and_quoted_credentials(text, secret):
+    safe = tm._safe_text(text)
+    assert secret not in safe
+    assert "[redacted]" in safe
+
+
+def test_safe_text_keeps_non_secret_control_text():
+    assert tm._safe_text('status="quota available" count=3') == 'status="quota available" count=3'
+
+
 def masked_paths(home, repo):
     scratch = home / "scratch"
     scratch.mkdir(exist_ok=True)

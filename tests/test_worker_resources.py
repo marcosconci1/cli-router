@@ -255,9 +255,50 @@ def test_subprocess_race_never_admits_more_than_default_capacity():
 def test_configured_worker_limit_reads_direct_and_nested_settings():
     import hermes_adapter
     import task_manager as tm
-    for config in ({"max-workers": 3}, {"settings": {"max-workers": 3}}):
+    configs = ({"max-workers": 3}, {"cli-router": {"settings": {"max-workers": 3}}})
+    for values in configs:
         with patch.object(hermes_adapter, "has_context", return_value=True), \
-             patch.object(hermes_adapter, "get_config", return_value=config):
+             patch.object(hermes_adapter, "get_config", side_effect=lambda name, default=None:
+                          values.get(name, default)):
             assert tm._max_workers() == 3
     with patch.object(hermes_adapter, "has_context", return_value=False):
         assert tm._max_workers() == 2
+
+
+def test_configured_worker_limit_prefers_plugin_relative_then_legacy():
+    import hermes_adapter
+    import task_manager as tm
+
+    class Context:
+        def __init__(self, values):
+            self.values = values
+            self.calls = []
+
+        def get_config(self, name, default=None):
+            self.calls.append(name)
+            return self.values.get(name, default)
+
+    ctx = Context({"max-workers": 5, "cli-router": {"max-workers": 3}})
+    with patch.object(tm, "_load_modular_config", return_value={}), \
+         patch.object(hermes_adapter, "has_context", return_value=True), \
+         patch.object(hermes_adapter, "get_config", side_effect=ctx.get_config):
+        assert tm._max_workers() == 5
+    assert ctx.calls == ["max-workers"]
+
+    ctx = Context({"cli-router": {"settings": {"max-workers": 3}}})
+    with patch.object(tm, "_load_modular_config", return_value={}), \
+         patch.object(hermes_adapter, "has_context", return_value=True), \
+         patch.object(hermes_adapter, "get_config", side_effect=ctx.get_config):
+        assert tm._max_workers() == 3
+    assert ctx.calls == ["max-workers", "cli-router"]
+
+
+@pytest.mark.parametrize("value", [True, 0, 9, 2.5, "3"])
+def test_configured_worker_limit_rejects_unsafe_hermes_values(value):
+    import hermes_adapter
+    import task_manager as tm
+    import worker_resources as resources
+    with patch.object(tm, "_load_modular_config", return_value={}), \
+         patch.object(hermes_adapter, "has_context", return_value=True), \
+         patch.object(hermes_adapter, "get_config", return_value=value):
+        assert tm._max_workers() == resources.DEFAULT_MAX_WORKERS

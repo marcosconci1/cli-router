@@ -267,7 +267,8 @@ def _workers(tmp_path, body, hermes=None):
 def _run_workers(tmp_path, body, hermes=None):
     cfg, _ = _workers(tmp_path, body)
     with cfg, patch.object(hermes_adapter, "has_context", return_value=hermes is not None), \
-         patch.object(hermes_adapter, "get_config", return_value=hermes or {}):
+         patch.object(hermes_adapter, "get_config", side_effect=lambda name, default=None:
+                      (hermes or {}).get(name, default)):
         return tm._max_workers()
 
 
@@ -276,7 +277,7 @@ def test_max_workers_file_wins_over_hermes(tmp_path):
 
 
 def test_max_workers_hermes_used_when_file_omits_it(tmp_path):
-    assert _run_workers(tmp_path, "  jev: true\n", {"max-workers": 3}) == 3
+    assert _run_workers(tmp_path, "  jev: true\n", {"cli-router": {"max-workers": 3}}) == 3
 
 
 def test_max_workers_default_two(tmp_path):
