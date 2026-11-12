@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import re
 from typing import Any
 
 
@@ -17,13 +16,11 @@ def post_error(task_view: dict[str, Any]) -> str:
     first = degraded[0] if isinstance(degraded, list) and degraded and isinstance(degraded[0], dict) else {}
     code = _one_line(first.get("code")) or _one_line(task_view.get("error_class")) or "TASK_FAILED"
     component = _one_line(first.get("component")) or "router"
-    cause = _one_line(first.get("detail") or task_view.get("error_detail") or task_view.get("message"))
+    cause = _one_line(first.get("detail") or task_view.get("message") or task_view.get("error_detail"))
     # Use the router's canonical credential masking for every cause before display.
     try:
         import task_manager
         cause = task_manager._safe_text(cause, 180)
-        if re.search(r"(?i)\b(?:[a-z0-9]+[_-])*(?:token|api[_-]?key|access[_-]?key|password|secret|credential)\b", cause):
-            cause = "sensitive failure detail redacted"
     except Exception:
         cause = "sensitive failure detail redacted"
     cause = cause[:180] or "task ended without a successful result"

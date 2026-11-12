@@ -3126,7 +3126,17 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
             progress_handle = None
             last_phase = None
             if _notify_setting("progress-updates"):
-                progress_handle = hermes_adapter.post_and_edit(_safe_text(notify.progress(data), 500), task_id)
+                try:
+                    progress_handle = hermes_adapter.post_and_edit(
+                        _safe_text(notify.progress(data), 500), task_id, progress=True,
+                        message_id=data.get("progress_message_id"))
+                    posted_id = getattr(progress_handle, "message_id", None)
+                    if posted_id and data.get("progress_message_id") != str(posted_id):
+                        data["progress_message_id"] = str(posted_id)
+                        _write(task_id, data)
+                except Exception as exc:
+                    _record_route_warning(task_id, "notification", exc, data)
+                    progress_handle = None
                 last_phase = data.get("phase")
             with _STATE_CHANGED:
                 while data.get("state") in _ACTIVE_STATES:
@@ -3146,6 +3156,8 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
                 _notify_error_if_needed(data)
         elif data.get("state") in {"blocked", "failed_verification"} and not data.get("error_notified"):
             _notify_error_if_needed(data)
+        if data.get("state") in _TERMINAL_JOURNAL_STATES:
+            hermes_adapter.clear_progress(task_id)
         return _status_view(data, args.get("include_history") is True)
     if action == "cancel":
         task_id = str(args.get("task_id", ""))
