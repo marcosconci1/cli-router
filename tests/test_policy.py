@@ -101,6 +101,56 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(len(ctx.posts[0][1].edits), 1)
         self.assertIn("completed", ctx.posts[0][1].edits[0])
 
+    def test_progress_two_waits_reuse_one_handle_and_terminal_clears_it(self):
+        from collections import OrderedDict
+
+        class Handle:
+            def __init__(self):
+                self.message_id = "progress-1"
+                self.edits = []
+
+            def edit(self, text):
+                self.edits.append(text)
+
+        class Context:
+            def __init__(self):
+                self.posts = []
+
+            def post_message(self, text):
+                handle = Handle()
+                self.posts.append((text, handle))
+                return handle
+
+        ctx = Context()
+        handles = OrderedDict()
+        tid = "1" * 32
+        record = {"task_id": tid, "state": "running", "phase": "worker", "owner_hash": "unused",
+                  "created_at": "2026-01-01T00:00:00+00:00", "current_attempt": 1}
+        reads = iter((("running", "worker"), ("running", "review"),
+                      ("running", "review"), ("completed", "completed")))
+
+        def read(_task_id):
+            state, phase = next(reads)
+            record.update(state=state, phase=phase)
+            return record
+
+        with patch.object(tm.hermes_adapter, "_CONTEXT", ctx), \
+             patch.object(tm.hermes_adapter, "_PROGRESS_MESSAGES", handles), \
+             patch.object(tm, "_read", side_effect=read), patch.object(tm, "_owns", return_value=True), \
+             patch.object(tm, "_load_modular_config", return_value={"progress-updates": True, "notify-errors": False}), \
+             patch.object(tm._STATE_CHANGED, "wait", return_value=None), patch.object(tm, "_write"), \
+             patch.object(tm.time, "monotonic", side_effect=[0, 0, 1, 2, 2]), \
+             patch.object(tm, "_status_view", side_effect=lambda data, _: {"state": data["state"]}):
+            tm.dispatch({"action": "wait", "task_id": tid, "owner_token": "owner", "timeout_seconds": 0.1})
+            self.assertEqual(record["progress_message_id"], "progress-1")
+            tm.dispatch({"action": "wait", "task_id": tid, "owner_token": "owner", "timeout_seconds": 0.1})
+
+        self.assertEqual(len(ctx.posts), 1)
+        self.assertEqual(len(ctx.posts[0][1].edits), 3)
+        self.assertIn("review", ctx.posts[0][1].edits[0])
+        self.assertIn("completed", ctx.posts[0][1].edits[-1])
+        self.assertNotIn(tid, handles)
+
     def test_review_routing_uses_cost_then_quality_objectives(self):
         requests = []
         class Context:

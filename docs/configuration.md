@@ -31,7 +31,9 @@ All keys live under a single top-level `cli-router` mapping.
 | `max-workers` | integer 1 to 8 | `2` | Host-wide limit on concurrent protected worker and reviewer attempts. |
 | `quota-reserve` | integer 0 to 99 | `30` | Excludes a subscription route when any percentage window has this percent or less remaining. |
 | `notify-errors` | bool | `true` | Sends a compact notice when a task is blocked or fails verification. |
-| `progress-updates` | bool | `true` | Posts one wait message and edits it as the task phase changes. |
+| `progress-updates` | bool | `true` | Posts one status message per task and edits it as the task phase changes. |
+
+Progress handles are kept in gateway memory for the eight most recent tasks. After a gateway restart, or after a task falls out of that cache, its existing message cannot be edited and cli-router does not post a duplicate.
 
 ai-memory defaults to `auto`. An installed CLI counts as chosen under implicit `auto`; explicit `disabled` wins. Jev is chosen when `jev: true` or cli-router's own `settings.connection` is configured. The example leaves both keys commented. Existing Hermes installations can still have an active ai-memory CLI under `auto`.
 

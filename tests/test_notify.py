@@ -28,10 +28,14 @@ def test_error_line_has_component_code_and_anchor():
     assert line == "⚠️ cli-router demo: ai-memory/AIM_AUTH — login expired · fix: docs/troubleshooting.md#AIM_AUTH"
 
 
-def test_error_line_falls_back_to_router_and_redacts_synthetic_secret():
-    line = notify.post_error({"task_id": "12345678", "error_detail": "AI_MEMORY_AUTH_TOKEN=[redacted]"})
+def test_error_line_uses_task_message_and_preserves_redacted_cause():
+    line = notify.post_error({"task_id": "12345678", "message": (
+        "route pin matched no eligible candidate; installed options: kimi/k3; "
+        "AI_MEMORY_AUTH_TOKEN=[redacted]")})
     assert "router/TASK_FAILED" in line
-    assert "AI_MEMORY_AUTH_TOKEN" not in line
+    assert "route pin matched no eligible candidate" in line
+    assert "AI_MEMORY_AUTH_TOKEN=[redacted]" in line
+    assert "sensitive failure detail redacted" not in line
 
 
 def test_progress_line_includes_worker_review_phase_and_elapsed():

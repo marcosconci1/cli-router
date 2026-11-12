@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 _CONTEXT: Any | None = None
+_PROGRESS_MESSAGES: OrderedDict[str, Any] = OrderedDict()
+_PROGRESS_LOCK = threading.Lock()
+_MAX_PROGRESS_MESSAGES = 8
 
 
 def register(ctx: Any, schema: dict[str, Any], handler: Any) -> None:
@@ -26,14 +31,38 @@ def has_context() -> bool:
     return _CONTEXT is not None
 
 
-def post_and_edit(text: str, task_id: str | None = None) -> Any | None:
-    """Post a message without allowing Hermes failures to affect task dispatch."""
-    if _CONTEXT is None:
+def clear_progress(task_id: str) -> None:
+    with _PROGRESS_LOCK:
+        _PROGRESS_MESSAGES.pop(task_id, None)
+
+
+def post_and_edit(text: str, task_id: str | None = None, *, progress: bool = False,
+                  message_id: str | None = None) -> Any | None:
+    """Post or reuse a progress handle without allowing Hermes failures to affect dispatch."""
+    handle = None
+    if progress and task_id:
+        with _PROGRESS_LOCK:
+            handle = _PROGRESS_MESSAGES.get(task_id)
+            if handle is not None:
+                _PROGRESS_MESSAGES.move_to_end(task_id)
+    if handle is None and message_id:
+        # Hermes cannot reconstruct a conversation-bound PluginMessage from only its message id.
+        return None
+    if handle is None and _CONTEXT is None:
         return None
     try:
+        if handle is not None:
+            handle.edit(text)
+            return handle
         result = _CONTEXT.post_message(text)
         if result is None or result is False or getattr(result, "refused", False):
             return None
+        if progress and task_id and getattr(result, "message_id", None):
+            with _PROGRESS_LOCK:
+                _PROGRESS_MESSAGES[task_id] = result
+                _PROGRESS_MESSAGES.move_to_end(task_id)
+                while len(_PROGRESS_MESSAGES) > _MAX_PROGRESS_MESSAGES:
+                    _PROGRESS_MESSAGES.popitem(last=False)
         return result
     except Exception as exc:
         try:
