@@ -18,8 +18,15 @@ ROUTES = [
 
 
 class Context:
+    def __init__(self):
+        self.posted_texts = []
+
     def get_config(self, name, default=None):
         return {"backend": "openrouter", "model": "typesafe/jev-1.14"}
+
+    def post_message(self, text):
+        self.posted_texts.append(text)
+        return SimpleNamespace(message_id=f"message-{len(self.posted_texts)}")
 
 
 def run_worker(tmp_path, service_run, changed_files):
@@ -28,6 +35,7 @@ def run_worker(tmp_path, service_run, changed_files):
     repo.mkdir()
     ref = {"workstream_id": str(uuid.UUID(task_id)), "latest_sequence": 1}
     calls = []
+    context = Context()
 
     class Service:
         def __init__(self, ctx):
@@ -55,12 +63,12 @@ def run_worker(tmp_path, service_run, changed_files):
              {"outcome": "quota_limited", "ai_memory": ref},
              {"outcome": "account_stop", "ai_memory": ref},
          ]) as worker, \
-         patch.object(tm.hermes_adapter, "_CONTEXT", Context()), \
+         patch.object(tm.hermes_adapter, "_CONTEXT", context), \
          patch.dict("sys.modules", {"hermes_jev.service": fake}):
         tm._write(task_id, {"task_id": task_id, "state": "queued"})
         tm._worker(task_id, repo, "task", "change", [], ROUTES, None)
         data = tm._read(task_id)
-    return data, worker, calls
+    return data, worker, calls, context.posted_texts
 
 
 def test_retries_after_failed_request_then_uses_real_jev_answer_without_fallback(tmp_path):
@@ -73,7 +81,7 @@ def test_retries_after_failed_request_then_uses_real_jev_answer_without_fallback
             return {"ok": False}
         return {"ok": True, "answers": {"handoff": {"choice": "continue"}}}
 
-    data, worker, calls = run_worker(tmp_path, service_run, ["changed.py"])
+    data, worker, calls, posted_texts = run_worker(tmp_path, service_run, ["changed.py"])
     assert len(calls) == 2
     assert worker.call_count == 2
     assert data["ai_memory"]["handoff_decision"] == "continue"
@@ -84,7 +92,7 @@ def test_persistent_failure_continues_on_progress_and_records_warning(tmp_path):
     def service_run(request):
         raise RuntimeError("service unavailable")
 
-    data, worker, calls = run_worker(tmp_path, service_run, ["changed.py"])
+    data, worker, calls, posted_texts = run_worker(tmp_path, service_run, ["changed.py"])
     assert len(calls) == 2
     assert worker.call_count == 2
     assert data["ai_memory"]["handoff_decision"] == "continue"
@@ -100,7 +108,7 @@ def test_persistent_failure_stops_without_progress_with_unsuitable_message(tmp_p
     def service_run(request):
         raise RuntimeError("service unavailable")
 
-    data, worker, calls = run_worker(tmp_path, service_run, [])
+    data, worker, calls, posted_texts = run_worker(tmp_path, service_run, [])
     assert len(calls) == 2
     assert worker.call_count == 1
     assert data["state"] == "blocked"
@@ -113,7 +121,7 @@ def test_unknown_choice_uses_deterministic_progress_fallback(tmp_path):
     def service_run(request):
         return {"ok": True, "answers": {"handoff": {"choice": "unknown"}}}
 
-    data, worker, calls = run_worker(tmp_path, service_run, ["changed.py"])
+    data, worker, calls, posted_texts = run_worker(tmp_path, service_run, ["changed.py"])
     assert len(calls) == 1
     assert worker.call_count == 2
     assert data["ai_memory"]["handoff_decision"] == "continue"
