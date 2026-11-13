@@ -2626,6 +2626,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
             except BlockingIOError:
                 _transition(data, "blocked", "repository_lock_blocked", "another worker owns this repository",
                             state="blocked", finished_at=_stamp())
+                _notify_error_if_needed(data)
                 lock_handle.close()
                 return
     try:
@@ -2966,6 +2967,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
         _transition(data, "blocked", "task_blocked", f"routing or worker error ({type(exc).__name__})",
                     state="blocked", finished_at=_stamp())
     finally:
+        _notify_error_if_needed(data)
         if locked and fcntl is not None:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         lock_handle.close()

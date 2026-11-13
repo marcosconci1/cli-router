@@ -24,8 +24,14 @@ def test_error_builder_never_includes_task_prompt():
 
 def test_error_line_has_component_code_and_anchor():
     line = notify.post_error({"task_id": "12345678abcdef", "label": "demo",
-                              "degraded": [{"component": "ai-memory", "code": "AIM_AUTH", "detail": "login expired"}]})
-    assert line == "⚠️ cli-router demo: ai-memory/AIM_AUTH — login expired · fix: docs/troubleshooting.md#AIM_AUTH"
+                              "degraded": [{"component": "ai-memory", "code": "AIM_AUTH_MISSING", "detail": "login expired"}]})
+    assert line == "⚠️ cli-router demo: ai-memory/AIM_AUTH_MISSING — login expired · fix: docs/troubleshooting.md#aim_auth_missing"
+
+
+def test_error_line_omits_anchor_for_unknown_code():
+    line = notify.post_error({"task_id": "12345678", "degraded": [
+        {"component": "router", "code": "TASK_FAILED", "detail": "failed"}]})
+    assert line.endswith("fix: docs/troubleshooting.md")
 
 
 def test_error_line_uses_task_message_and_preserves_redacted_cause():

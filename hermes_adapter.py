@@ -66,7 +66,10 @@ def post_and_edit(text: str, task_id: str | None = None, *, progress: bool = Fal
         return result
     except Exception as exc:
         try:
-            import task_manager
+            try:
+                from . import task_manager
+            except ImportError:  # plain-module layout (tests, CLI probes)
+                import task_manager
             task_manager._record_route_warning(task_id, "notification", exc)
         except Exception:
             pass

@@ -27,7 +27,14 @@ def post_error(task_view: dict[str, Any]) -> str:
     except Exception:
         cause = "sensitive failure detail redacted"
     cause = cause[:180] or "task ended without a successful result"
-    return f"⚠️ cli-router {label}: {component}/{code} — {cause} · fix: docs/troubleshooting.md#{code}"
+    try:
+        from . import problems
+    except ImportError:  # plain-module layout (tests, CLI probes)
+        import problems
+    fix = "docs/troubleshooting.md"
+    if code in problems.CODES:
+        fix += "#" + code.lower()
+    return f"⚠️ cli-router {label}: {component}/{code} — {cause} · fix: {fix}"
 
 
 def progress(task_view: dict[str, Any], now: datetime | None = None) -> str:
