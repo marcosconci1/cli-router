@@ -19,7 +19,10 @@ def post_error(task_view: dict[str, Any]) -> str:
     cause = _one_line(first.get("detail") or task_view.get("message") or task_view.get("error_detail"))
     # Use the router's canonical credential masking for every cause before display.
     try:
-        import task_manager
+        try:
+            from . import task_manager
+        except ImportError:  # plain-module layout (tests, CLI probes)
+            import task_manager
         cause = task_manager._safe_text(cause, 180)
     except Exception:
         cause = "sensitive failure detail redacted"
