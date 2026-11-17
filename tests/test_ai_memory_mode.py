@@ -57,6 +57,7 @@ class AiMemoryModeTests(unittest.TestCase):
         root = Path(temporary.name)
         repo = root / "repo"
         repo.mkdir()
+        (repo / "README.md").write_text("fixture")
         state = root / "state"
         candidate = ({"cli": "agy", "provider": "antigravity", "model": "gemini-3.8-flash-low",
                       "effort": "low"} if cli == "agy" else
@@ -133,6 +134,7 @@ class AiMemoryModeTests(unittest.TestCase):
         root = Path(temporary.name)
         repo = root / "repo"
         repo.mkdir()
+        (repo / "README.md").write_text("fixture")
         agy = {"cli": "agy", "provider": "antigravity", "model": "gemini-3.8-flash-low",
                "effort": "low"}
         codex = {"cli": "codex", "provider": "openai-codex", "model": "gpt-6-luna", "effort": "low"}

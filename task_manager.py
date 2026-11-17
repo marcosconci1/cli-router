@@ -2658,6 +2658,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                               if ai_memory_bridge else None,
                               "scope": "ai-memory CLI resolver for the canonical target repository"}
         _transition(data, "worker_preparing", "worker_ready", "repository baseline captured")
+        previous_failure_signature = None
         for candidate_index, candidate in enumerate(candidates):
             if task_id in _CANCEL:
                 _transition(data, "cancelled", "task_cancelled", "cancelled by coordinator",
@@ -2763,6 +2764,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                                          error=_safe_text(outcome.get("reason", "memory bridge failed"), 300))
             external_failed = False
             external_unreviewed = False
+            local_acceptance_failed = False
             if outcome_kind == "needs_verification":
                 _transition(data, "verifying", "verification_started", attempt=attempt_index)
                 last_checks = _independent_checks(repo, before, mode, baseline_digests)
@@ -2774,6 +2776,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                           and last_checks["head_unchanged"])
                          or (mode == "change" and bool(last_checks["changed_files"])))
                 )
+                local_acceptance_failed = not local_checks_passed
                 if local_checks_passed and not _independent_review_enabled():
                     skip = {"skipped": True,
                             "summary": "independent review skipped by cli-router configuration",
@@ -2844,6 +2847,18 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                               "reason": _safe_text(outcome.get("reason", ""), 800),
                               "ai_memory": memory_ref,
                               "memory_policy": candidate_memory_mode}
+            failing_criteria = []
+            if local_acceptance_failed and outcome_kind == "failed_verification":
+                failing_criteria = [c for c in ((last_checks or {}).get("acceptance") or {}).get("criteria", [])
+                                    if not c.get("ok")]
+                if failing_criteria:
+                    attempt_record["reason"] = _safe_text(
+                        "acceptance failed: " + "; ".join(
+                            f"{c.get('criterion')} {c.get('path') or ''}".replace("  ", " ").rstrip()
+                            + f" ({c.get('reason')})" for c in failing_criteria), 800)
+            failure_signature = (tuple(sorted((str(c.get("criterion")), str(c.get("path")))
+                                              for c in failing_criteria))
+                                 if failing_criteria and not attempt_record["changed_files"] else None)
             if outcome_kind == "memory_blocked":
                 _record_attempt_unconfirmed(data, outcome.get("stderr"), outcome.get("reason"))
                 attempt_record["attempt_stderr"] = _safe_text(outcome.get("stderr") or "", 500)
@@ -2856,6 +2871,17 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                      else "attempt_finished")
             phase = "verifying" if event == "verification_finished" else "attempt_finished"
             _transition(data, phase, event, attempt=attempt_index, outcome=outcome_kind)
+            if failure_signature is not None and failure_signature == previous_failure_signature:
+                names = ", ".join(f"{k} '{p}'" if p != "None" else k for k, p in failure_signature)
+                hint = ("; analysis workers run read-only and cannot create files"
+                        if mode == "analysis" else "")
+                _transition(data, "blocked", "criteria_unsatisfiable",
+                            _safe_text(f"two consecutive attempts failed the same acceptance criteria with no "
+                                       f"changes: {names}{hint}", 600),
+                            attempt=attempt_index, state="blocked", finished_at=_stamp(),
+                            verification=last_checks)
+                return  # the worker's finally block sends the error notice
+            previous_failure_signature = failure_signature
             if outcome_kind == "unreviewed":
                 done = outcome
                 _transition(data, "unreviewed", "task_finished",
@@ -3223,6 +3249,15 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "cli must be a non-empty string of at most 40 characters"}
     if pin_model is not None and (not isinstance(pin_model, str) or not pin_model.strip() or len(pin_model) > 120):
         return {"ok": False, "error": "model must be a non-empty string of at most 120 characters"}
+    if mode == "analysis":
+        for item in criteria:
+            kind, rel = item["type"], item.get("path", "")
+            if kind == "file_changed" or (kind == "file_exists" and not (Path(repo) / rel).exists()):
+                why = ("the file does not exist and analysis mode cannot create it" if kind == "file_exists"
+                       else "analysis mode cannot change files")
+                return {"ok": False, "error": _safe_text(
+                    f"analysis workers run read-only: criterion {kind} '{rel}' cannot pass because {why}; "
+                    "use mode=change or drop the criterion", 400)}
     label = args.get("label")
     if label is not None:
         if not isinstance(label, str):
@@ -3410,6 +3445,7 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         raise
     return {"task_id": task_id, "owner_token": owner_token, "state": "queued", "phase": "queued",
             "repository": str(repo), "mode": mode, "candidate_count": len(candidates),
+            "route_pin": {"cli": pin_cli, "model": pin_model},
             "message": "task accepted; use cli_router status to follow progress",
             **({"degraded": data["degraded"]} if data.get("degraded") else {})}
 
