@@ -4,6 +4,8 @@
 
 - Add compact Hermes error notices for blocked and failed-verification tasks.
 - Add editable wait progress updates and configurable notification settings.
+- Reject acceptance criteria a read-only analysis worker can never satisfy (file_changed; file_exists on a missing path) at submit time.
+- Stop trying further routes after two consecutive identical acceptance failures, name the failing criteria in the attempt reason, and echo the effective route pin in the submit reply.
 
 ## 0.8.0
 
