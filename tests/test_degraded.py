@@ -214,6 +214,7 @@ def _submit(configured_mode, verify_error=None, modular=None, plugin=None, conte
     root = Path(temporary.name)
     repo = root / "repo"
     repo.mkdir()
+    (repo / "README.md").write_text("fixture")
     state = root / "state"
     candidate = {"cli": "codex", "provider": "openai-codex", "model": "gpt-6-luna", "effort": "low"}
     quota = {"fresh": True, "cache": {"providers": {}}}

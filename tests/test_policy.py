@@ -1205,6 +1205,7 @@ class PolicyTests(unittest.TestCase):
             repo = Path(temp)
             import subprocess
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "README").write_text("fixture")
             old_root = tm._root
             tm._root = lambda: repo / "state"
             lock = tm._lock_path(repo).open("a+")
@@ -1276,6 +1277,7 @@ class PolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); repo = root / "repo"; repo.mkdir()
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "README").write_text("fixture")
             old_root = tm._root; tm._root = lambda: root / "state"
             q = {"cache": {"providers": {}}, "age": 1, "fresh": True}
             routes = [{"cli": "codex", "provider": "openai-codex", "model": "gpt-6-luna", "effort": "low"}]
@@ -1298,6 +1300,7 @@ class PolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); repo = root / "repo"; repo.mkdir()
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "README").write_text("fixture")
             old_root = tm._root; tm._root = lambda: root / "state"
             try:
                 with patch.object(tm, "_ai_memory_mode", return_value="enabled"), \
