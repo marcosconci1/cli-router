@@ -6,6 +6,7 @@
 - Add editable wait progress updates and configurable notification settings.
 - Reject acceptance criteria a read-only analysis worker can never satisfy (file_changed; file_exists on a missing path) at submit time.
 - Stop trying further routes after two consecutive identical acceptance failures, name the failing criteria in the attempt reason, and echo the effective route pin in the submit reply.
+- Fix CI test collection: test modules that import repository-root code now insert the repository root on sys.path instead of relying on collection order.
 
 ## 0.8.0
 
