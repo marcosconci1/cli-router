@@ -4,6 +4,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import hermes_adapter
 import task_manager as tm
 
