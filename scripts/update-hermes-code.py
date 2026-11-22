@@ -114,7 +114,7 @@ def _bootstrap(target: Path, revision: str) -> None:
         if manifest.get("name") != PLUGIN:
             raise RuntimeError("unexpected plugin name at origin/main")
         plugins_cmd._check_manifest_version(manifest, PLUGIN)
-        plugins_cmd._scan_merged_tree(staged, ORIGIN, None)
+        plugins_cmd._scan_merged_tree(staged, ORIGIN, None, force=False)
         _refresh_declared_dependencies(target, staged, manifest, interactive=False)
         task_dir = target.parent.parent / "runtime" / "cli-tasks"
         if _busy(task_dir):

@@ -154,7 +154,7 @@ def test_native_bootstrap_publishes_tracking_metadata_with_verified_tree(install
         assert after["another-plugin"] == before["another-plugin"]
         assert (staged / "source").read_text() == NEW
         assert target_digest == OLD
-        plugin_cmd._scan_merged_tree.assert_called_once_with(staged, updater.ORIGIN, None)
+        plugin_cmd._scan_merged_tree.assert_called_once_with(staged, updater.ORIGIN, None, force=False)
 
     plugin_cmd._clone_plugin_repo = clone
     plugin_cmd._read_manifest_for_install = Mock(return_value={"name": updater.PLUGIN})
