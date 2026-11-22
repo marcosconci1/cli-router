@@ -1,0 +1,13 @@
+{
+  "metadataGeneration": {
+    "branchName": {
+      "instructions": "Prefix with the change type: feat/, fix/, docs/, chore/ or test/, followed by the issue number and a short kebab-case description, e.g. fix/123-bounded-worker-concurrency (no number when the work has no issue). Use backup/ only for safety snapshots. One branch tells one coherent story."
+    },
+    "commitMessage": {
+      "instructions": "Use Conventional Commits: type(scope): short imperative summary, subject at most 50 characters. Omit the scope for repo-wide changes (chore:, ci:). Name the concrete behavior changed. Never add Co-Authored-By trailers, Generated-with footers, or any other AI attribution."
+    },
+    "pullRequest": {
+      "instructions": "Open as a draft when work starts and mark ready for review when the work is done. Lead with a one-paragraph summary of what changed and why, in plain natural voice. End with a short verification section listing the tests or commands that prove it, and reference the issue (Closes #N). No AI phrasing or attribution."
+    }
+  }
+}
