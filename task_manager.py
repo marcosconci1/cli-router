@@ -23,7 +23,7 @@ import time
 import uuid
 import ast
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -43,6 +43,7 @@ _ACTIVE_STATES = {"queued", "running", "cancelling"}
 MAX_TASK_SECONDS = 1800
 # Fable stays excluded: headless workers cannot consent to its possible usage-credit charges.
 CLAUDE_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
+AGY_MODEL_ID = re.compile(r"(?:gemini-4-(?:argon|neon|hydrogen|carbon)|gemini-3\.8-flash)-(low|medium|high|xhigh)")
 # Login/session stores each sandboxed CLI must be able to write (token refresh, transcripts).
 SANDBOX_STATE = {
     "claude": (".claude", ".claude.json", ".cache/claude", ".local/state/claude"),
@@ -739,8 +740,12 @@ def _installed_models() -> dict[str, dict[str, list[str]]]:
     if shutil.which("agy"):
         try:
             p = subprocess.run(["agy", "models"], capture_output=True, text=True, timeout=20)
-            result["agy"] = {line.split()[0]: [line.split()[0].rsplit("-", 1)[-1]] for line in p.stdout.splitlines()
-                             if re.match(r"^(gemini-4-argon|gemini-3\.8-flash)-(low|medium|high)\b", line)}
+            if p.returncode == 0:
+                for line in p.stdout.splitlines():
+                    model = line.split(maxsplit=1)
+                    match = AGY_MODEL_ID.fullmatch(model[0]) if model else None
+                    if match:
+                        result["agy"][match[0]] = [match[1]]
         except Exception:
             pass
     try:
@@ -776,8 +781,7 @@ def _subscriptions(q: dict[str, Any], models: dict[str, dict[str, list[str]]]) -
         ("codex", "openai-codex", "gpt-5.6-terra"),
         ("kimi", "kimi", "kimi-code/k3.1-pro"),
         ("kimi", "kimi", "kimi-code/kimi-for-coding"),
-        ("agy", "antigravity", "gemini-4-argon"),
-        ("agy", "antigravity", "gemini-3.8-flash"),
+        ("agy", "antigravity", None),
         ("claude", "claude", "claude-opus-5-5"),
         ("claude", "claude", "claude-sonnet-5-5"),
         ("claude", "claude", "claude-haiku-5-5"),
@@ -786,8 +790,9 @@ def _subscriptions(q: dict[str, Any], models: dict[str, dict[str, list[str]]]) -
     routed_pools = set()
     for cli, provider, model in choices:
         if cli == "agy":
-            model_options = [(m, m.rsplit("-", 1)[-1]) for m in models.get(cli, {})
-                             if m.startswith(model + "-")]
+            # Offer every discovered variant together before marking a shared pool as routed.
+            model_options = [(exact_model, effort) for exact_model, efforts in models.get(cli, {}).items()
+                             for effort in efforts]
         elif cli == "kimi":
             # kimi -p has no effort flag: the configured default applies, so never claim one.
             model_options = [(model, None)] if model in models.get(cli, {}) else []
@@ -2274,8 +2279,7 @@ def _route_identity(candidate: dict[str, Any]) -> tuple[Any, Any, Any]:
 def _quota_scope(candidate: dict[str, Any]) -> tuple[Any, Any, Any, str | None]:
     family = None
     if candidate.get("cli") == "agy":
-        model = str(candidate.get("model") or "")
-        family = re.sub(r"-(?:low|medium|high)$", "", model)
+        family = route_benchmark.route_key(candidate)
     return (candidate.get("cli"), candidate.get("provider"), candidate.get("account"), family)
 
 
@@ -2437,9 +2441,7 @@ def _review_tier(candidate: dict[str, Any]) -> float | None:
     tier = candidate.get("review_tier")
     if isinstance(tier, (int, float)) and not isinstance(tier, bool) and math.isfinite(tier):
         return float(tier)
-    cli, model = candidate.get("cli"), str(candidate.get("model") or "")
-    family = re.sub(r"-(?:low|medium|high)$", "", model) if cli == "agy" else model
-    return REVIEW_MODEL_TIERS.get((cli, family))
+    return REVIEW_MODEL_TIERS.get((candidate.get("cli"), route_benchmark.route_key(candidate)))
 
 
 def _degraded_review_pool(available: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3224,6 +3226,27 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         return _recover_action(args)
     if action != "submit":
         return {"ok": False, "error": "action must be submit, wait, status, cancel, recover, doctor, or diagnose"}
+    return _submit(args)
+
+
+def _submit_with_update_lock(submit: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    if fcntl is None:
+        return submit()
+    try:
+        lock = (_task_dir() / ".plugin-update.lock").open("a+")
+    except OSError:
+        return {"ok": False, "error": "could not acquire plugin update lock"}
+    with lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"ok": False, "error": "cli-router is updating; retry shortly"}
+        except OSError:
+            return {"ok": False, "error": "could not acquire plugin update lock"}
+        return submit()
+
+
+def _submit(args: dict[str, Any]) -> dict[str, Any]:
     task = args.get("task")
     if not isinstance(task, str) or not task.strip() or len(task) > 20000:
         return {"ok": False, "error": "task must be non-empty and at most 20,000 characters"}
@@ -3266,6 +3289,12 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         if not label or len(label) > 60:
             return {"ok": False, "error": "label must be a non-empty string of at most 60 characters"}
         label = _safe_text(label, 60)
+    return _submit_with_update_lock(lambda: _start_submission(
+        repo, task, mode, criteria, label, pin_cli, pin_model))
+
+
+def _start_submission(repo: Path, task: str, mode: str, criteria: list[dict[str, str]],
+                      label: str | None, pin_cli: str | None, pin_model: str | None) -> dict[str, Any]:
     lock_path = _lock_path(repo)
     try:
         repo_lock = lock_path.open("a+")

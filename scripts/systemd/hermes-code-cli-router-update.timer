@@ -1,0 +1,9 @@
+[Unit]
+Description=Check for cli-router updates for Hermes Code every five minutes
+
+[Timer]
+OnStartupSec=1min
+OnUnitInactiveSec=5min
+
+[Install]
+WantedBy=timers.target

@@ -67,6 +67,9 @@ OPENROUTER_IDS = {
     "kimi-code/k3.1-pro": "moonshotai/kimi-k3.1-pro",
     "gemini-3.8-flash": "google/gemini-3.8-flash",
     "gemini-4-argon": "google/gemini-4-argon",
+    "gemini-4-neon": "google/gemini-4-neon",
+    "gemini-4-hydrogen": "google/gemini-4-hydrogen",
+    "gemini-4-carbon": "google/gemini-4-carbon",
 }
 
 OPERATOR_NOTES = {
@@ -179,7 +182,7 @@ def load(fetch: Callable[[], list[dict[str, Any]]], snapshot: Path, now: float |
 def route_key(candidate: dict[str, Any]) -> str:
     model = str(candidate.get("model") or "")
     if candidate.get("cli") == "agy":
-        return re.sub(r"-(low|medium|high)$", "", model)
+        return re.sub(r"-(?:low|medium|high|xhigh)$", "", model)
     return model
 
 
