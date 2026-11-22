@@ -56,6 +56,8 @@ AKITA_PARTIAL = {
 
 # Route model -> OpenRouter catalog id (free OpenCode routes already use catalog ids).
 OPENROUTER_IDS = {
+    "gpt-6.2-sol": "openai/gpt-6.2-sol",
+    "gpt-6.2-astra": "openai/gpt-6.2-astra",
     "gpt-6-luna": "openai/gpt-6-luna",
     "gpt-6.1-sol": "openai/gpt-6.1-sol",
     "gpt-6.1-terra": "openai/gpt-6.1-terra",

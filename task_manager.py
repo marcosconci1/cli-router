@@ -42,6 +42,7 @@ _STATE_CHANGED = threading.Condition(_LOCK)
 _ACTIVE_STATES = {"queued", "running", "cancelling"}
 MAX_TASK_SECONDS = 1800
 # Fable stays excluded: headless workers cannot consent to its possible usage-credit charges.
+CODEX_MODELS = ("gpt-6.2-sol", "gpt-6.2-astra", "gpt-6-luna", "gpt-5.6-terra")
 CLAUDE_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
 AGY_MODEL_ID = re.compile(r"(?:gemini-4-(?:argon|neon|hydrogen|carbon)|gemini-3\.8-flash)-(low|medium|high|xhigh)")
 # Login/session stores each sandboxed CLI must be able to write (token refresh, transcripts).
@@ -777,8 +778,7 @@ def _subscriptions(q: dict[str, Any], models: dict[str, dict[str, list[str]]]) -
         return []
     providers = q["cache"].get("providers", {})
     choices = [
-        ("codex", "openai-codex", "gpt-6-luna"),
-        ("codex", "openai-codex", "gpt-5.6-terra"),
+        ("codex", "openai-codex", None),
         ("kimi", "kimi", "kimi-code/k3.1-pro"),
         ("kimi", "kimi", "kimi-code/kimi-for-coding"),
         ("agy", "antigravity", None),
@@ -797,7 +797,10 @@ def _subscriptions(q: dict[str, Any], models: dict[str, dict[str, list[str]]]) -
             # kimi -p has no effort flag: the configured default applies, so never claim one.
             model_options = [(model, None)] if model in models.get(cli, {}) else []
         else:
-            model_options = [(model, effort) for effort in models.get(cli, {}).get(model, [])
+            # Collect all approved Codex models before marking its shared quota pool as routed.
+            model_options = [(exact_model, effort)
+                             for exact_model in (CODEX_MODELS if cli == "codex" else (model,))
+                             for effort in models.get(cli, {}).get(exact_model, [])
                              if effort in {"low", "medium", "high", "xhigh", "max", "ultra"}]
         if not model_options:
             continue
