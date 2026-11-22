@@ -97,23 +97,44 @@ def _reload(home: Path) -> None:
         raise RuntimeError("the Code gateway did not confirm cli-router activation")
 
 
-def _publish(target: Path, revision: str, *, bootstrap: bool) -> None:
+def _bootstrap(target: Path, revision: str) -> None:
     from hermes_cli import plugins_cmd
+    from hermes_cli.plugins_cmd_catalog import refuse_if_installed_removed
+    from hermes_cli.plugins_transaction import _refresh_declared_dependencies, publish_plugin
+    from pm.store import tree_digest
+
+    refuse_if_installed_removed(PLUGIN, target)
+    metadata = plugins_cmd._read_install_metadata()
+    before = tree_digest(target)
+    with tempfile.TemporaryDirectory(prefix=".install-", dir=target.parent) as temp:
+        staged = Path(temp) / "checkout"
+        plugins_cmd._clone_plugin_repo(staged, ORIGIN, None)
+        _verify_checkout(staged, revision)
+        manifest = plugins_cmd._read_manifest_for_install(staged)
+        if manifest.get("name") != PLUGIN:
+            raise RuntimeError("unexpected plugin name at origin/main")
+        plugins_cmd._check_manifest_version(manifest, PLUGIN)
+        plugins_cmd._scan_merged_tree(staged, ORIGIN, None, force=False)
+        _refresh_declared_dependencies(target, staged, manifest, interactive=False)
+        task_dir = target.parent.parent / "runtime" / "cli-tasks"
+        if _busy(task_dir):
+            raise RuntimeError("cli-router received work while staging; retry once idle")
+        record = {"pinned": False, "revision": revision, "source": ORIGIN}
+        publish_plugin(staged, target, metadata, {**metadata, PLUGIN: record}, target_digest=before)
+
+
+def _publish(target: Path, revision: str, *, bootstrap: bool) -> None:
+    if bootstrap:
+        _bootstrap(target, revision)
+        return
     from hermes_cli.plugins_auto_update import unattended_gate
     from hermes_cli.plugins_transaction import update_plugin
-
-    def verify(_manifest: dict, staged: Path) -> None:
-        _verify_checkout(staged, revision)
-
-    if bootstrap:
-        plugins_cmd._install_plugin_core(ORIGIN, force=True, accept_caution=False, before_swap=verify)
-        return
 
     _verify_checkout(target, _head(target))
     surface_gate = unattended_gate(PLUGIN, target)
 
     def gate(manifest: dict, staged: Path) -> None:
-        verify(manifest, staged)
+        _verify_checkout(staged, revision)
         surface_gate(manifest, staged)
 
     update_plugin(target, surface_gate=gate)

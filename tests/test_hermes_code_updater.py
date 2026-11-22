@@ -133,3 +133,39 @@ def test_bootstrap_backs_up_dirty_pinned_checkout(install):
     backup, = install.record.parent.glob("bootstrap-*")
     assert (backup / "checkout" / "private-patch").read_text() == "local routing work"
     assert json.loads((backup / "install-record.json").read_text())["pinned"] is True
+
+
+
+def test_native_bootstrap_publishes_tracking_metadata_with_verified_tree(install, monkeypatch):
+    metadata = install.metadata
+    metadata[updater.PLUGIN]["pinned"] = True
+    plugin_cmd = sys.modules["hermes_cli"].plugins_cmd
+
+    def clone(staged, origin, ref):
+        assert origin == updater.ORIGIN
+        assert ref is None
+        staged.mkdir()
+        (staged / "source").write_text(NEW)
+
+    def native_publish(staged, target, before, after, *, target_digest):
+        assert target == install.target
+        assert before[updater.PLUGIN]["pinned"]
+        assert after[updater.PLUGIN] == {"pinned": False, "revision": NEW, "source": updater.ORIGIN}
+        assert after["another-plugin"] == before["another-plugin"]
+        assert (staged / "source").read_text() == NEW
+        assert target_digest == OLD
+        plugin_cmd._scan_merged_tree.assert_called_once_with(staged, updater.ORIGIN, None, force=False)
+
+    plugin_cmd._clone_plugin_repo = clone
+    plugin_cmd._read_manifest_for_install = Mock(return_value={"name": updater.PLUGIN})
+    plugin_cmd._check_manifest_version = Mock()
+    plugin_cmd._scan_merged_tree = Mock()
+    transaction = sys.modules["hermes_cli.plugins_transaction"]
+    transaction._refresh_declared_dependencies = Mock()
+    transaction.publish_plugin = Mock(side_effect=native_publish)
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins_cmd_catalog",
+                        SimpleNamespace(refuse_if_installed_removed=Mock()))
+    monkeypatch.setitem(sys.modules, "pm.store",
+                        SimpleNamespace(tree_digest=lambda tree: (tree / "source").read_text()))
+    updater._bootstrap(install.target, NEW)
+    transaction.publish_plugin.assert_called_once()
