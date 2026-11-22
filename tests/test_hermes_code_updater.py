@@ -100,10 +100,13 @@ def test_submission_and_updater_share_the_lock(install, monkeypatch):
     monkeypatch.setattr(task_manager, "_task_dir", lambda: install.tasks)
     monkeypatch.setattr(task_manager, "_journal_startup", lambda: None)
     submit = Mock()
-    monkeypatch.setattr(task_manager, "_submit", submit)
+    monkeypatch.setattr(task_manager, "_start_submission", submit)
+    monkeypatch.setattr(task_manager, "_repo", lambda _: install.target)
+    args = {"action": "submit", "task": "test", "mode": "change",
+            "acceptance_criteria": [{"type": "file_exists", "path": "source"}]}
     with (install.tasks / updater.SUBMISSION_LOCK).open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        assert "updating" in task_manager.dispatch({"action": "submit"})["error"]
+        assert "updating" in task_manager.dispatch(args)["error"]
     submit.assert_not_called()
     with (install.tasks / updater.SUBMISSION_LOCK).open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_SH)

@@ -23,7 +23,7 @@ import time
 import uuid
 import ast
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -3226,12 +3226,12 @@ def dispatch(args: dict[str, Any]) -> dict[str, Any]:
         return _recover_action(args)
     if action != "submit":
         return {"ok": False, "error": "action must be submit, wait, status, cancel, recover, doctor, or diagnose"}
-    return _submit_with_update_lock(args)
+    return _submit(args)
 
 
-def _submit_with_update_lock(args: dict[str, Any]) -> dict[str, Any]:
+def _submit_with_update_lock(submit: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     if fcntl is None:
-        return _submit(args)
+        return submit()
     try:
         lock = (_task_dir() / ".plugin-update.lock").open("a+")
     except OSError:
@@ -3243,7 +3243,7 @@ def _submit_with_update_lock(args: dict[str, Any]) -> dict[str, Any]:
             return {"ok": False, "error": "cli-router is updating; retry shortly"}
         except OSError:
             return {"ok": False, "error": "could not acquire plugin update lock"}
-        return _submit(args)
+        return submit()
 
 
 def _submit(args: dict[str, Any]) -> dict[str, Any]:
@@ -3289,6 +3289,12 @@ def _submit(args: dict[str, Any]) -> dict[str, Any]:
         if not label or len(label) > 60:
             return {"ok": False, "error": "label must be a non-empty string of at most 60 characters"}
         label = _safe_text(label, 60)
+    return _submit_with_update_lock(lambda: _start_submission(
+        repo, task, mode, criteria, label, pin_cli, pin_model))
+
+
+def _start_submission(repo: Path, task: str, mode: str, criteria: list[dict[str, str]],
+                      label: str | None, pin_cli: str | None, pin_model: str | None) -> dict[str, Any]:
     lock_path = _lock_path(repo)
     try:
         repo_lock = lock_path.open("a+")
