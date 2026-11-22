@@ -413,6 +413,42 @@ class PolicyTests(unittest.TestCase):
         # A Kimi alias that resembles the requested model is never substituted.
         self.assertFalse(any(r["cli"] == "kimi" for r in routes))
 
+    def test_latest_codex_routes_reach_jev_with_exact_benchmarks(self):
+        quota = {"fresh": True, "cache": {"providers": {"openai-codex": {"accounts": [
+            {"label": "primary", "shared_pool_id": "pool", "windows": [{"used_percent": 20}]},
+            {"label": "alias", "shared_pool_id": "pool", "windows": [{"used_percent": 20}]},
+        ]}}}}
+        installed = {"codex": {
+            "gpt-6.2-sol": ["low"], "gpt-6.2-astra": ["high", "ultra"],
+            "gpt-6-luna": ["low"], "gpt-6-fable": ["high"], "gpt-reserve": ["low"],
+        }}
+        routes = tm._subscriptions(quota, installed)
+        self.assertEqual([(r["model"], r["effort"], r["account"]) for r in routes], [
+            ("gpt-6.2-sol", "low", "primary"), ("gpt-6.2-astra", "high", "primary"),
+            ("gpt-6.2-astra", "ultra", "primary"), ("gpt-6-luna", "low", "primary"),
+        ])
+        index = tm.route_benchmark.openrouter_index([
+            {"id": "openai/gpt-6.2-sol", "benchmarks": {"artificial_analysis": {"intelligence_index": 57.3}}},
+            {"id": "openai/gpt-6.2-astra", "benchmarks": {"artificial_analysis": {"intelligence_index": 62.1}}},
+        ])
+        with patch.object(tm, "_jev_enabled", return_value=True), \
+             patch.object(tm, "_benchmark_index", return_value=index), \
+             patch.object(tm.hermes_adapter, "get_config", return_value={
+                 "backend": "openrouter", "model": "typesafe/jev-1.14"}), \
+             patch.object(tm.hermes_adapter, "jev_service") as jev:
+            service = jev.return_value
+            service.run.return_value = {"ok": True, "answers": {"route": {"choice": "stop"}}}
+            for purpose in ("work", "review"):
+                self.assertEqual(tm._jev_choose("Assess the options", routes, purpose=purpose), [])
+                offered = service.run.call_args.args[0]["state"]["ordered_candidates"]
+                profiles = {r["model"]: r["profile"] for r in offered}
+                self.assertAlmostEqual(profiles["gpt-6.2-sol"]["openrouter"]["intelligence_index"], 57.3)
+                self.assertAlmostEqual(profiles["gpt-6.2-astra"]["openrouter"]["intelligence_index"], 62.1)
+                self.assertNotIn("akita_v4", profiles["gpt-6.2-astra"])
+        quota["cache"]["providers"]["openai-codex"]["accounts"][0]["windows"][0]["used_percent"] = 100
+        quota["cache"]["providers"]["openai-codex"]["accounts"][1]["windows"][0]["used_percent"] = 100
+        self.assertEqual(tm._subscriptions(quota, installed), [])
+
     def test_efforts_are_limited_to_installed_model_evidence(self):
         q = {"fresh": True, "cache": {"providers": {
             "openai-codex": {"windows": [{"used_percent": 25}]},
