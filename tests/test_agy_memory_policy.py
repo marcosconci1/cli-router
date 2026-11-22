@@ -1,7 +1,7 @@
 """AGY participates fully in managed ai-memory attempts and handoffs."""
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch, call
+from unittest.mock import Mock, patch, call
 
 import pytest
 
@@ -160,13 +160,82 @@ def test_agy_fail_verdict_triggers_repair_worker(tmp_path):
     assert result["state"] == "completed"
 
 
-def test_model_discovery_lists_agy_models():
-    listing = "gemini-3.8-flash-low  Fast\ngemini-4-argon-high  Deep\nunrelated-model\n"
+@pytest.mark.parametrize("returncode", [0, 1])
+@pytest.mark.parametrize("carbon_available", [False, True])
+def test_model_discovery_lists_agy_models(returncode, carbon_available):
+    listing = (
+        "Fetching available models...\n"
+        "gemini-3.8-flash-low\tFast\n"
+        "gemini-4-argon-high\tDeep\n"
+        "gemini-4-neon-xhigh\tNeon\n"
+        "gemini-4-hydrogen-medium\tHydrogen\n"
+        "gemini-4-neon-high-preview\tUnsupported variant\n"
+        "gemini-4-carbon-high-preview\tUnsupported variant\n"
+        "claude-opus-5-5-high\tClaude\n"
+        "gemini-pro-orchestrator-neon\tOrchestrator\n"
+    )
+    if carbon_available:
+        listing += "gemini-4-carbon-high\tCarbon\n"
     with patch.object(tm.shutil, "which", side_effect=lambda name, *a, **k: "/usr/bin/agy" if name == "agy" else None), \
          patch.object(tm, "_installed_cli", return_value=None), \
-         patch.object(tm.subprocess, "run", return_value=SimpleNamespace(stdout=listing, returncode=0)):
+         patch.object(tm.subprocess, "run", return_value=SimpleNamespace(stdout=listing, returncode=returncode)):
         models = tm._installed_models()
-    assert models["agy"] == {"gemini-3.8-flash-low": ["low"], "gemini-4-argon-high": ["high"]}
+    expected = {"gemini-3.8-flash-low": ["low"], "gemini-4-argon-high": ["high"],
+                "gemini-4-neon-xhigh": ["xhigh"], "gemini-4-hydrogen-medium": ["medium"]}
+    if carbon_available:
+        expected["gemini-4-carbon-high"] = ["high"]
+    assert models["agy"] == (expected if returncode == 0 else {})
+
+
+def test_agy_shared_quota_offers_all_discovered_variants_to_jev(tmp_path, monkeypatch):
+    config = tmp_path / "cli-router.yaml"
+    config.write_text("cli-router:\n  jev: true\n  quota-reserve: 20\n")
+    monkeypatch.setenv("CLI_ROUTER_CONFIG", str(config))
+    new_models = {f"gemini-4-{family}-{effort}": [effort]
+                  for family in ("neon", "hydrogen", "carbon") for effort in ("low", "medium", "high", "xhigh")}
+    installed = {"agy": {"gemini-4-argon-high": ["high"], "gemini-3.8-flash-low": ["low"], **new_models}}
+    window = {"used_percent": 10}
+    accounts = [{"label": label, "shared_pool_id": "shared", "windows": [window]}
+                for label in ("primary", "alias")]
+    quota = {"fresh": True, "cache": {"providers": {"antigravity": {"accounts": accounts}}}}
+    candidates = tm._subscriptions(quota, installed)
+    assert len(candidates) == len(installed["agy"])
+    assert all(candidate["account"] == "primary" for candidate in candidates)
+
+    service = Mock()
+    service.run.return_value = {"ok": True, "answers": {"route": {"choice": "stop"}}}
+    connection = {"backend": "openrouter", "model": "typesafe/jev-1.14"}
+    index = tm.route_benchmark.openrouter_index([
+        {"id": f"google/gemini-4-{family}",
+         "benchmarks": {"artificial_analysis": {"coding_index": score}},
+         "pricing": {"prompt": "0.000001", "completion": "0.000001"}}
+        for family, score in (("neon", 100), ("hydrogen", 80), ("carbon", 60))
+    ])
+    with patch.object(tm.hermes_adapter, "jev_service", return_value=service), \
+         patch.object(tm.hermes_adapter, "get_config", return_value=connection), \
+         patch.object(tm, "_benchmark_index", return_value=index):
+        tm._jev_choose("Choose a route", candidates)
+        offered = service.run.call_args.args[0]["state"]["ordered_candidates"]
+        assert {candidate["model"]: [candidate["effort"]] for candidate in offered} == installed["agy"]
+        by_model = {candidate["model"]: candidate["profile"] for candidate in offered}
+        assert by_model["gemini-4-argon-high"]["composite_basis"] == ["akita_engineering_breadth_90pct"]
+        for family, score in (("neon", 100), ("hydrogen", 80), ("carbon", 60)):
+            profile = by_model[f"gemini-4-{family}-xhigh"]
+            assert profile["composite_basis"] == ["aa_coding"]
+            assert profile["openrouter"]["coding_index"] == score
+        assert tm._fallback_rank(candidates, index)[0]["model"].startswith("gemini-4-neon-")
+
+        excluded = "gemini-4-neon-xhigh"
+        with config.open("a") as settings:
+            settings.write(f"  providers:\n    agy:\n      excluded_models: [{excluded}]\n")
+        active = tm._filter_candidates_by_toggle(candidates)
+        assert all(candidate["model"] != excluded for candidate in active)
+        tm._jev_choose("Choose a reviewer", candidates, purpose="review")
+        offered = service.run.call_args.args[0]["state"]["ordered_candidates"]
+        assert {candidate["model"] for candidate in offered} == installed["agy"].keys() - {excluded}
+
+    window["used_percent"] = 80
+    assert tm._subscriptions(quota, installed) == []
 
 
 def test_status_view_keeps_long_summaries():

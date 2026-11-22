@@ -40,6 +40,16 @@ def test_cooldown_file_is_private_atomic_and_expires(tmp_path):
         assert json.loads(path.read_text()) == {}
 
 
+def test_agy_xhigh_cooldown_applies_to_its_model_family(tmp_path):
+    candidate = route("gemini-4-neon-xhigh", "xhigh")
+    with patch.object(tm, "_root", return_value=tmp_path), \
+         patch.object(tm, "_quota", return_value={"fresh": False, "cache": {}}):
+        tm._record_quota_cooldown(candidate, "Resets in 60s", now=1000)
+        assert tm._route_cooling_down(route("gemini-4-neon-low", "low"), now=1001)
+        assert not tm._route_cooling_down(route("gemini-4-hydrogen-xhigh", "xhigh"), now=1001)
+        assert tm.route_benchmark.route_key(candidate) == "gemini-4-neon"
+
+
 def test_cooldown_clamped_to_nearest_future_quota_window(tmp_path):
     candidate = route("gemini-4-argon-low", "low", cli="agy", account="account")
     # Parsed reset hint says 80h (~288000s). Nearest window reset is in 2 hours (7200s).
