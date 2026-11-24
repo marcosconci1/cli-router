@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.1
+
+- Fix Gemini routing evidence and track verified Hermes Code updates (#4).
+- Migrate the pinned Hermes Code checkout atomically (#5).
+- Offer GPT-6.2 Sol and Astra to Jev (#6).
+
 ## 0.9.0
 
 - Add compact Hermes error notices for blocked and failed-verification tasks.
