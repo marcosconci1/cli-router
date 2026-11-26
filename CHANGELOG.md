@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.2
+
+- Let change tasks request a local branch. The router selects it before launching the worker so normal commits work with the sandbox's Git protections.
+- Give both reviewers the starting commit and, when supplied, the task ref so they can verify committed content even when the snapshot shows the base branch and local changes.
+
 ## 0.9.1
 
 - Fix Gemini routing evidence and track verified Hermes Code updates (#4).

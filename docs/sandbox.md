@@ -13,7 +13,7 @@ Workers execute locally under sandbox controls. This page explains what the sand
 
 * Edit files in the target repository in change mode.
 * Read host files that are not masked, access the network, and write to the permitted CLI state and temporary paths.
-* Commit its own result on the checkout's current branch.
+* Commit its own result on the checkout's current branch. An optional `branch` on a change submission lets the router create and select a branch before the worker starts.
 
 ## What a worker cannot do
 
@@ -31,6 +31,10 @@ The sandbox binds the task's Git metadata through Git itself:
 
 These controls permit commits while protecting the checkout's hooks and branch pointer. CLI state and temporary files can persist outside the repository.
 
+Branch setup runs under the repository task lock with networking and Git hooks disabled. The router starts the branch at current HEAD in the submitted checkout and preserves staged, unstaged, and untracked content. It reuses an existing branch when it is already checked out there. If the branch exists elsewhere or Git cannot select it, the task blocks before launching a worker. The branch stays checked out so the caller can inspect the result or partial changes.
+
 ## The review gate
 
 A commit alone does not finish a task. Two distinct models in fresh contexts and separate disposable snapshots review the change independently by default. Both must pass. The review can be switched off in `cli-router.yaml`; see [Configuration](configuration.md). Reviewers may share a provider, and the implementer's model remains eligible in a fresh context. A failed review sends the task back with the reviewers' required changes, and the router picks a route again.
+
+Both reviewers receive the starting commit and the requested task ref when available. A worker can write a commit to another ref while the snapshot still shows the starting branch and a dirty tree. If the task requires a commit, reviewers inspect the ref, its commit range, and the snapshot contents before issuing a verdict.

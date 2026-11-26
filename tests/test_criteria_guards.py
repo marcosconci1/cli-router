@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import task_manager as tm
@@ -74,6 +76,31 @@ def test_change_missing_file_exists_valid(tmp_path):
     result, _ = _submit(tmp_path, "change", [{"type": "file_exists", "path": "docs/x.md"}],
                        {"cli": "claude"})
     assert result.get("state") == "queued"
+    assert "branch" not in result
+
+
+@pytest.mark.parametrize("name", ["", "bad name", "-other", "@{-1}", "refs/heads/task", None])
+def test_submit_rejects_invalid_branch(tmp_path, name):
+    result, home = _submit(tmp_path, "change", [{"type": "git_diff_clean"}], {"branch": name})
+    assert result == {"ok": False, "error": "branch must be a literal local Git branch name"}
+    assert _task_files(home) == []
+
+
+def test_submit_rejects_branch_for_analysis(tmp_path):
+    result, home = _submit(tmp_path, "analysis", [{"type": "git_diff_clean"}], {"branch": "fix/demo"})
+    assert result == {"ok": False, "error": "branch is supported only in change mode"}
+    assert _task_files(home) == []
+
+
+def test_submit_status_and_wait_report_branch(tmp_path):
+    result, home = _submit(tmp_path, "change", [{"type": "git_diff_clean"}],
+                           {"cli": "claude", "branch": "fix/demo"})
+    assert result["state"] == "queued"
+    assert result["branch"] == "fix/demo"
+    owner = {key: result[key] for key in ("task_id", "owner_token")}
+    with patch.object(tm, "_root", return_value=home):
+        assert tm.dispatch({"action": "status", **owner})["branch"] == "fix/demo"
+        assert tm.dispatch({"action": "wait", "timeout_seconds": 0, **owner})["branch"] == "fix/demo"
 
 
 def test_route_pin_echoed(tmp_path):
