@@ -14,6 +14,7 @@ TASK_SCHEMA = {
             "repository": {"type": "string", "description": "Existing local Git repository path; required for submit and recover."},
             "task": {"type": "string", "description": "Task for the CLI worker; required for submit."},
             "mode": {"type": "string", "enum": ["analysis", "change"]},
+            "branch": {"type": "string", "description": "Optional local branch name for change submissions. Create it from current HEAD or reuse it if already checked out here."},
             "label": {"type": "string", "description": "Optional short name for the task, up to 60 characters, shown in status and wait. Do not put secrets or prompts in it."},
             "cli": {"type": "string", "description": "Optional pin for submit: restrict routing to one CLI (e.g. claude, codex, kimi, agy, opencode). Reviews still run independently."},
             "model": {"type": "string", "description": "Optional pin for submit: restrict routing to one model (e.g. claude-opus-5-5). Reviews still run independently."},

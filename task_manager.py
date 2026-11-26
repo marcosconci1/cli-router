@@ -559,16 +559,23 @@ def _repo(path: str) -> Path:
 
 def _git_readonly(repo: Path, *args: str, timeout: int = 15) -> subprocess.CompletedProcess:
     """Run Git metadata checks inside a read-only, network-isolated OS sandbox."""
+    return _sandbox_git(repo, *args, timeout=timeout)
+
+
+def _sandbox_git(repo: Path, *args: str, timeout: int,
+                 writable_git_dir: Path | None = None) -> subprocess.CompletedProcess:
     bwrap = shutil.which("bwrap")
     git = shutil.which("git", path="/usr/bin:/bin")
     if not bwrap or not git:
-        raise RuntimeError("read-only Git inspection requires bubblewrap and Git")
+        raise RuntimeError("isolated Git commands require bubblewrap and Git")
     command = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
-               "--unshare-net", "--chdir", str(repo),
-               "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
-               "--setenv", "GIT_CONFIG_NOSYSTEM", "1", "--setenv", "GIT_CONFIG_GLOBAL", "/dev/null",
-               "--setenv", "GIT_OPTIONAL_LOCKS", "0", "--setenv", "GIT_TERMINAL_PROMPT", "0",
-               "--", git, "-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-C", str(repo), *args]
+               "--unshare-net", "--chdir", str(repo)]
+    if writable_git_dir is not None:
+        command += ["--bind", str(writable_git_dir), str(writable_git_dir)]
+    command += ["--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
+                "--setenv", "GIT_CONFIG_NOSYSTEM", "1", "--setenv", "GIT_CONFIG_GLOBAL", "/dev/null",
+                "--setenv", "GIT_OPTIONAL_LOCKS", "0", "--setenv", "GIT_TERMINAL_PROMPT", "0",
+                "--", git, "-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-C", str(repo), *args]
     return subprocess.run(command, capture_output=True, text=True, timeout=timeout,
                           env={"PATH": "/usr/bin:/bin", "HOME": "/tmp", "GIT_CONFIG_NOSYSTEM": "1",
                                "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_OPTIONAL_LOCKS": "0",
@@ -1552,7 +1559,8 @@ def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, 
                    attempt_index: int = 1, memory_context: str = "",
                    new_workstream: bool = True, role: str = "implement",
                    memory_repo: Path | None = None,
-                   fresh_session: bool = False, memory_mode: str = "managed") -> dict[str, Any]:
+                   fresh_session: bool = False, memory_mode: str = "managed",
+                   branch: str | None = None, review_base_head: str = "") -> dict[str, Any]:
     cli, model, effort = candidate["cli"], candidate["model"], candidate.get("effort")
     memory_mode = _candidate_memory_mode(candidate, memory_mode)
     memory_repo = memory_repo or repo
@@ -1566,6 +1574,26 @@ def _run_candidate(candidate: dict[str, Any], task: str, repo: Path, mode: str, 
         if role == "verify" else
         "You are a CLI coding worker. Follow repository instructions. "
     )
+    if role == "verify":
+        if review_base_head:
+            worker_instructions += f"The router captured base commit {review_base_head}. "
+        if branch:
+            worker_instructions += f"The requested task ref is {json.dumps('refs/heads/' + branch)}. "
+        worker_instructions += (
+            "Bubblewrap keeps Git HEAD read-only for implementation workers. A worker may have "
+            "committed to another ref while the snapshot still shows the base branch and a dirty status. "
+            "If the task requires a commit, resolve the requested ref, including a branch named only in "
+            "the task text, or identify the implementation commit if no branch is named. Inspect the "
+            "commit range from the base and compare the committed files with the snapshot. Check "
+            "content, deletions, modes and untracked task files. Base the verdict on that evidence "
+            "and the original requirements. The checked-out branch and dirty status alone are "
+            "insufficient to decide whether the work was committed. "
+        )
+    elif branch:
+        worker_instructions += (
+            f"The router has checked out {json.dumps('refs/heads/' + branch)}. "
+            "Use this checkout for task commits. "
+        )
     if precise_analysis:
         worker_instructions += (
             "This task requires precise repository evidence. Use tools in this attempt to inspect every "
@@ -1979,6 +2007,31 @@ def _git_metadata(repo: Path) -> tuple[Path, Path, Path] | None:
         if git_dir.parent != common / "worktrees" or back_link != top / ".git" or not common.is_dir():
             return None
     return git_dir, common, hooks
+
+
+def _current_git_ref(repo: Path) -> str:
+    result = _git_readonly(repo, "symbolic-ref", "--quiet", "HEAD", timeout=5)
+    return result.stdout.rstrip("\n") if result.returncode == 0 else ""
+
+
+def _prepare_task_branch(repo: Path, branch: str) -> None:
+    """Select a branch without giving the worker write access to HEAD."""
+    metadata = _git_metadata(repo)
+    if metadata is None:
+        raise RuntimeError("could not validate the checkout's Git metadata")
+    if _git_readonly(repo, "rev-parse", "--verify", "HEAD^{commit}", timeout=5).returncode:
+        raise RuntimeError("task branch requires an existing HEAD commit")
+    if _current_git_ref(repo) == f"refs/heads/{branch}":
+        return
+    _, common, _ = metadata
+    # The start point is the current HEAD, so Git only needs to write metadata.
+    result = _sandbox_git(
+        repo, "-c", "core.hooksPath=/dev/null", "switch", "--no-guess", "--no-track",
+        "--no-recurse-submodules", "-c", branch, timeout=15, writable_git_dir=common)
+    if result.returncode:
+        raise RuntimeError(_safe_text(result.stderr or "Git could not create the task branch", 300))
+    if _current_git_ref(repo) != f"refs/heads/{branch}":
+        raise RuntimeError("Git did not select the requested task branch")
 
 
 def _git_metadata_binds(repo: Path, visible_repo: Path, mode: str) -> list[str]:
@@ -2463,7 +2516,8 @@ def _degraded_review_pool(available: list[dict[str, Any]]) -> list[dict[str, Any
 def _external_verification(task_id: str, repo: Path, task: str,
                            criteria: list[dict[str, str]], candidates: list[dict[str, Any]],
                            implementer: dict[str, Any], openrouter_key: str | None,
-                           attempt_index: int, memory_mode: str = "managed") -> dict[str, Any]:
+                           attempt_index: int, memory_mode: str = "managed", *,
+                           base_head: str = "", branch: str | None = None) -> dict[str, Any]:
     verifier_task = (
         "Independently verify the completed code task below. Check every acceptance criterion and run "
         "the project's relevant tests. Do not rely on an implementer's claims and do not make fixes.\n\n"
@@ -2528,7 +2582,8 @@ def _external_verification(task_id: str, repo: Path, task: str,
             outcome = _run_candidate(
                 verifier, verifier_task, snapshot, "change", task_id, criteria, openrouter_key,
                 attempt_index=attempt_index + len(reviews), new_workstream=False,
-                role="verify", memory_repo=repo, memory_mode=memory_mode)
+                role="verify", memory_repo=repo, memory_mode=memory_mode,
+                branch=branch, review_base_head=base_head)
         raw_summary = outcome.get("summary") or outcome.get("reason") or ""
         verdict = _parse_verdict(raw_summary)
         summary = _safe_text(raw_summary, 3000)
@@ -2620,6 +2675,9 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
             candidates: list[dict[str, Any]], openrouter_key: str | None, lock_handle=None) -> None:
     data = _read(task_id) or {}
     memory_mode = (data.get("ai_memory") or {}).get("mode", "managed")
+    branch = data.get("branch") if mode == "change" else None
+    task_ref = f"refs/heads/{branch}" if branch else None
+    branch_changed_reason = "the requested task branch is no longer checked out"
     locked = lock_handle is not None
     if lock_handle is None:
         lock_handle = _lock_path(repo).open("a+")
@@ -2636,6 +2694,14 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                 return
     try:
         _LOCK_FDS[task_id] = lock_handle.fileno()
+        if branch and candidates and task_id not in _CANCEL:
+            try:
+                _prepare_task_branch(repo, branch)
+            except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+                _transition(data, "blocked", "task_branch_blocked",
+                            "could not prepare the task branch: " + _safe_text(str(exc), 300),
+                            state="blocked", finished_at=_stamp())
+                return
         before = _git_readonly(repo, "rev-parse", "HEAD", timeout=5).stdout.strip()
         status_before = _git_changed_paths(repo)
         baseline_digests = _path_digests(repo, status_before)
@@ -2731,6 +2797,10 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                                 ai_memory={**(data.get("ai_memory") or {}), "state": "blocked",
                                            "error": _safe_text(str(exc), 300)})
                     return
+            if task_ref and _current_git_ref(repo) != task_ref:
+                _transition(data, "blocked", "task_branch_blocked", branch_changed_reason,
+                            state="blocked", finished_at=_stamp())
+                return
             data["ai_memory"].update(state="attempt_running", attempt=attempt_index,
                                      candidate_rank=candidate.get("api_rank"))
             _transition(data, "worker_running", "attempt_started",
@@ -2741,7 +2811,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                                      attempt_index=attempt_index, memory_context=memory_context,
                                      new_workstream=prior_stream is None,
                                      fresh_session=candidate.get("cli") in reviewed_clis,
-                                     memory_mode=candidate_memory_mode)
+                                     memory_mode=candidate_memory_mode, branch=branch)
             data.update(_read(task_id) or {})  # Preserve admission/queue events written by the launch guard.
             attempt_finished = _stamp()
             outcome_kind = outcome.get("outcome")
@@ -2782,7 +2852,10 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                          or (mode == "change" and bool(last_checks["changed_files"])))
                 )
                 local_acceptance_failed = not local_checks_passed
-                if local_checks_passed and not _independent_review_enabled():
+                branch_changed = task_ref is not None and _current_git_ref(repo) != task_ref
+                if branch_changed:
+                    outcome["reason"] = branch_changed_reason
+                elif local_checks_passed and not _independent_review_enabled():
                     skip = {"skipped": True,
                             "summary": "independent review skipped by cli-router configuration",
                             "reviews": []}
@@ -2799,7 +2872,7 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                                 attempt=attempt_index + 1)
                     external = _external_verification(
                         task_id, repo, task, criteria, candidates, candidate, openrouter_key,
-                        attempt_index + 1, memory_mode=memory_mode)
+                        attempt_index + 1, memory_mode=memory_mode, base_head=before, branch=branch)
                     latest_record = _read(task_id) or {}
                     for key in ("events", "route_warnings", "degraded"):
                         if key in latest_record:
@@ -2835,7 +2908,9 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                         _transition(data, "verifying", "independent_review_skipped",
                                     "independent review skipped by configuration; local acceptance checks failed",
                                     attempt=attempt_index)
-                if last_checks["independent_checks_passed"] or (
+                if branch_changed:
+                    outcome_kind = "branch_changed"
+                elif last_checks["independent_checks_passed"] or (
                         last_checks.get("review_skipped") and local_checks_passed):
                     outcome_kind = "verified"
                 else:
@@ -2876,6 +2951,10 @@ def _worker(task_id: str, repo: Path, task: str, mode: str, criteria: list[dict[
                      else "attempt_finished")
             phase = "verifying" if event == "verification_finished" else "attempt_finished"
             _transition(data, phase, event, attempt=attempt_index, outcome=outcome_kind)
+            if outcome_kind == "branch_changed":
+                _transition(data, "blocked", "task_branch_blocked", branch_changed_reason,
+                            state="blocked", finished_at=_stamp(), verification=last_checks)
+                return
             if failure_signature is not None and failure_signature == previous_failure_signature:
                 names = ", ".join(f"{k} '{p}'" if p != "None" else k for k, p in failure_signature)
                 hint = ("; analysis workers run read-only and cannot create files"
@@ -3025,7 +3104,7 @@ def _safe_structure(value: Any) -> Any:
 def _status_view(data: dict[str, Any], include_history: bool = False) -> dict[str, Any]:
     if include_history:
         return _safe_structure({key: value for key, value in data.items() if key != "owner_hash"})
-    fields = ("task_id", "state", "phase", "repository", "mode", "label", "candidate_count",
+    fields = ("task_id", "state", "phase", "repository", "mode", "branch", "label", "candidate_count",
               "current_attempt", "created_at", "started_at", "updated_at", "finished_at",
               "message", "summary", "error_class", "error_detail", "route_warnings", "checkpoint")
     result = {key: data[key] for key in fields if key in data}
@@ -3269,6 +3348,19 @@ def _submit(args: dict[str, Any]) -> dict[str, Any]:
         repo = _repo(args.get("repository", ""))
     except Exception as exc:
         return {"ok": False, "error": _safe_text(str(exc), 300)}
+    branch = args.get("branch")
+    if "branch" in args:
+        if mode != "change":
+            return {"ok": False, "error": "branch is supported only in change mode"}
+        invalid_branch = {"ok": False, "error": "branch must be a literal local Git branch name"}
+        if not isinstance(branch, str) or not branch or "\0" in branch or branch.startswith("refs/"):
+            return invalid_branch
+        try:
+            checked = _git_readonly(repo, "check-ref-format", "--branch", branch, timeout=5)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
+            return {"ok": False, "error": "could not validate branch: " + _safe_text(str(exc), 300)}
+        if checked.returncode or checked.stdout.rstrip("\n") != branch:
+            return invalid_branch
     pin_cli = args.get("cli")
     pin_model = args.get("model")
     if pin_cli is not None and (not isinstance(pin_cli, str) or not pin_cli.strip() or len(pin_cli) > 40):
@@ -3293,11 +3385,12 @@ def _submit(args: dict[str, Any]) -> dict[str, Any]:
             return {"ok": False, "error": "label must be a non-empty string of at most 60 characters"}
         label = _safe_text(label, 60)
     return _submit_with_update_lock(lambda: _start_submission(
-        repo, task, mode, criteria, label, pin_cli, pin_model))
+        repo, task, mode, criteria, label, pin_cli, pin_model, branch=branch))
 
 
 def _start_submission(repo: Path, task: str, mode: str, criteria: list[dict[str, str]],
-                      label: str | None, pin_cli: str | None, pin_model: str | None) -> dict[str, Any]:
+                      label: str | None, pin_cli: str | None, pin_model: str | None, *,
+                      branch: str | None) -> dict[str, Any]:
     lock_path = _lock_path(repo)
     try:
         repo_lock = lock_path.open("a+")
@@ -3320,6 +3413,8 @@ def _start_submission(repo: Path, task: str, mode: str, criteria: list[dict[str,
             "task_fingerprint": hashlib.sha256(task.encode()).hexdigest(),
             "criteria_count": len(criteria), "created_at": _stamp(), "attempts": [],
             "candidate_count": 0, "current_attempt": 0}
+    if branch is not None:
+        data["branch"] = branch
     if label is not None:
         data["label"] = label
     _journal("task_started", {"task_id": task_id, "repository": str(repo), "mode": mode}, data)
@@ -3479,6 +3574,7 @@ def _start_submission(repo: Path, task: str, mode: str, criteria: list[dict[str,
             "repository": str(repo), "mode": mode, "candidate_count": len(candidates),
             "route_pin": {"cli": pin_cli, "model": pin_model},
             "message": "task accepted; use cli_router status to follow progress",
+            **({"branch": branch} if branch is not None else {}),
             **({"degraded": data["degraded"]} if data.get("degraded") else {})}
 
 
